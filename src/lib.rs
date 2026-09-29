@@ -14,6 +14,7 @@ pub mod server;
 pub mod typed;
 
 pub use flatbuffers;
+pub use phf;
 
 /// FNV-1a (32-bit) of a method's full name, e.g. "CoprocessorProto.Wifi/Connect".
 pub const fn method_id(full_name: &str) -> u32 {

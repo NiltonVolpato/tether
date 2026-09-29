@@ -205,16 +205,30 @@ impl Pack for {p}T {{
         .unwrap();
     }
 
-    let mut by_namespace: BTreeMap<&[String], Vec<&Service>> = BTreeMap::new();
-    for s in services {
-        by_namespace.entry(&s.namespace).or_default().push(s);
+    let mut table = phf_codegen::Map::new();
+    table.phf_path(format!("{rpc}::phf"));
+    for (i, s) in services.iter().enumerate() {
+        for m in &s.methods {
+            let value = format!(
+                "{rpc}::router::Method {{ name: {:?}, service: {i}, streaming: {} }}",
+                m.full_name, m.streaming
+            );
+            table.entry(m.id, value);
+        }
+    }
+    writeln!(out, "/// Every method in the schema, by method id.").unwrap();
+    writeln!(out, "pub static METHODS: {rpc}::router::MethodTable = {};\n", table.build()).unwrap();
+
+    let mut by_namespace: BTreeMap<&[String], Vec<(usize, &Service)>> = BTreeMap::new();
+    for (i, s) in services.iter().enumerate() {
+        by_namespace.entry(&s.namespace).or_default().push((i, s));
     }
     for (namespace, services) in by_namespace {
         for n in namespace {
             writeln!(out, "pub mod {} {{", snake(n)).unwrap();
         }
-        for s in services {
-            service(&mut out, s, rpc, &args.types);
+        for (i, s) in services {
+            service(&mut out, i, s, rpc, &args.types);
         }
         for _ in namespace {
             writeln!(out, "}}").unwrap();
@@ -223,7 +237,7 @@ impl Pack for {p}T {{
     out
 }
 
-fn service(out: &mut String, s: &Service, rpc: &str, types: &str) {
+fn service(out: &mut String, index: usize, s: &Service, rpc: &str, types: &str) {
     doc(out, "", &s.doc);
     writeln!(
         out,
@@ -235,6 +249,9 @@ fn service(out: &mut String, s: &Service, rpc: &str, types: &str) {
     use {rpc}::typed::{{Call, Channel, Pack, Reply, Sink}};
 
     use {types} as fb;
+
+    /// This service's index in `METHODS`.
+    pub const INDEX: usize = {index};
 ",
         snake(&s.name)
     )
@@ -293,23 +310,8 @@ fn service(out: &mut String, s: &Service, rpc: &str, types: &str) {
     pub struct Service<H>(pub H);
 
     impl<H: Handler> {rpc}::router::Service for Service<H> {{
-        fn method(&self, method: u32) -> Option<bool> {{
-            match method {{"
-    )
-    .unwrap();
-    for m in &s.methods {
-        writeln!(
-            out,
-            "                {} => Some({}),",
-            snake(&m.name).to_uppercase(),
-            m.streaming
-        )
-        .unwrap();
-    }
-    writeln!(
-        out,
-        "                _ => None,
-            }}
+        fn index(&self) -> usize {{
+            INDEX
         }}
 
         fn call(&mut self, server: &mut Server, call: IncomingCall<'_>) {{
@@ -376,5 +378,53 @@ fn main() -> ExitCode {
             eprintln!("rpcgen: {e}");
             ExitCode::FAILURE
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use serde_json::json;
+
+    use super::*;
+
+    /// Two methods of service `T.S` with the same id. By the birthday bound,
+    /// 32-bit ids collide after ~82k names.
+    fn colliding_names() -> (String, String) {
+        let mut seen = HashMap::new();
+        for i in 0.. {
+            let name = format!("M{i}");
+            if let Some(other) = seen.insert(method_id(&format!("T.S/{name}")), name.clone()) {
+                return (other, name);
+            }
+        }
+        unreachable!()
+    }
+
+    fn schema(calls: &[&str]) -> Value {
+        let calls: Vec<Value> = calls
+            .iter()
+            .map(|c| json!({ "name": c, "request": { "name": "T.Req" }, "response": { "name": "T.Resp" } }))
+            .collect();
+        json!({ "services": [{ "name": "T.S", "calls": calls }] })
+    }
+
+    #[test]
+    fn method_id_collision_names_both_methods() {
+        let (a, b) = colliding_names();
+        let err = parse(&schema(&[&a, &b])).err().unwrap();
+        assert!(err.contains(&format!("T.S/{a}")) && err.contains(&format!("T.S/{b}")), "{err}");
+    }
+
+    #[test]
+    #[should_panic(expected = "duplicate key")]
+    fn method_table_rejects_colliding_ids() {
+        // Bypasses parse() to check the phf table's own guard.
+        let (a, b) = colliding_names();
+        let args = Args { input: String::new(), types: "t".into(), rpc: "rpc".into() };
+        let mut services = parse(&schema(&[&a])).unwrap();
+        services.extend(parse(&schema(&[&b])).unwrap());
+        generate(&services, &args, "test");
     }
 }

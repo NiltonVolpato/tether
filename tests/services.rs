@@ -148,7 +148,7 @@ impl Coprocessor {
             art: (0..30_000u32).map(|i| (i * 7 % 251) as u8).collect(),
             ..Default::default()
         }));
-        let mut router = Router::new();
+        let mut router = Router::new(&generated::coprocessor_rpc::METHODS);
         router.add(wifi::Service(wifi)).add(sonos::Service(sonos.clone()));
         Self { router, sonos }
     }

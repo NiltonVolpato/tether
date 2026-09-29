@@ -205,6 +205,86 @@ impl Pack for fb::coprocessor_proto::WifiStatusT {
     }
 }
 
+/// Every method in the schema, by method id.
+pub static METHODS: rpc_experiment::router::MethodTable = rpc_experiment::phf::Map {
+    key: 4203492208743950414,
+    disps: &[(1, 1), (0, 0), (0, 1)],
+    entries: &[
+        (
+            4123159542,
+            rpc_experiment::router::Method {
+                name: "CoprocessorProto.Wifi/StartProvisioning",
+                service: 3,
+                streaming: false,
+            },
+        ),
+        (
+            4109185957,
+            rpc_experiment::router::Method {
+                name: "CoprocessorProto.Wifi/WatchProvisioning",
+                service: 3,
+                streaming: true,
+            },
+        ),
+        (
+            1425643852,
+            rpc_experiment::router::Method {
+                name: "CoprocessorProto.Wifi/Watch",
+                service: 3,
+                streaming: true,
+            },
+        ),
+        (
+            274895685,
+            rpc_experiment::router::Method {
+                name: "CoprocessorProto.Wifi/Connect",
+                service: 3,
+                streaming: false,
+            },
+        ),
+        (
+            3145221233,
+            rpc_experiment::router::Method {
+                name: "CoprocessorProto.Clock/Watch",
+                service: 0,
+                streaming: true,
+            },
+        ),
+        (
+            2116529854,
+            rpc_experiment::router::Method {
+                name: "CoprocessorProto.Sonos/Subscribe",
+                service: 2,
+                streaming: true,
+            },
+        ),
+        (
+            3489350998,
+            rpc_experiment::router::Method {
+                name: "CoprocessorProto.Sonos/AlbumArt",
+                service: 2,
+                streaming: true,
+            },
+        ),
+        (
+            2468843691,
+            rpc_experiment::router::Method {
+                name: "CoprocessorProto.Dashboard/ReportBattery",
+                service: 1,
+                streaming: false,
+            },
+        ),
+        (
+            769966452,
+            rpc_experiment::router::Method {
+                name: "CoprocessorProto.Wifi/StopProvisioning",
+                service: 3,
+                streaming: false,
+            },
+        ),
+    ],
+};
+
 pub mod coprocessor_proto {
     /// Network time.
     pub mod clock {
@@ -215,6 +295,9 @@ pub mod coprocessor_proto {
         use rpc_experiment::typed::{Call, Channel, Pack, Reply, Sink};
 
         use crate::generated::coprocessor_generated as fb;
+
+        /// This service's index in `METHODS`.
+        pub const INDEX: usize = 0;
 
         /// `CoprocessorProto.Clock/Watch`
         pub const WATCH: u32 = 0xbb784471;
@@ -247,11 +330,8 @@ pub mod coprocessor_proto {
         pub struct Service<H>(pub H);
 
         impl<H: Handler> rpc_experiment::router::Service for Service<H> {
-            fn method(&self, method: u32) -> Option<bool> {
-                match method {
-                    WATCH => Some(true),
-                    _ => None,
-                }
+            fn index(&self) -> usize {
+                INDEX
             }
 
             fn call(&mut self, server: &mut Server, call: IncomingCall<'_>) {
@@ -284,6 +364,9 @@ pub mod coprocessor_proto {
 
         use crate::generated::coprocessor_generated as fb;
 
+        /// This service's index in `METHODS`.
+        pub const INDEX: usize = 1;
+
         /// `CoprocessorProto.Dashboard/ReportBattery`
         pub const REPORT_BATTERY: u32 = 0x932790ab;
 
@@ -312,11 +395,8 @@ pub mod coprocessor_proto {
         pub struct Service<H>(pub H);
 
         impl<H: Handler> rpc_experiment::router::Service for Service<H> {
-            fn method(&self, method: u32) -> Option<bool> {
-                match method {
-                    REPORT_BATTERY => Some(false),
-                    _ => None,
-                }
+            fn index(&self) -> usize {
+                INDEX
             }
 
             fn call(&mut self, server: &mut Server, call: IncomingCall<'_>) {
@@ -348,6 +428,9 @@ pub mod coprocessor_proto {
         use rpc_experiment::typed::{Call, Channel, Pack, Reply, Sink};
 
         use crate::generated::coprocessor_generated as fb;
+
+        /// This service's index in `METHODS`.
+        pub const INDEX: usize = 2;
 
         /// `CoprocessorProto.Sonos/Subscribe`
         pub const SUBSCRIBE: u32 = 0x7e27aebe;
@@ -397,12 +480,8 @@ pub mod coprocessor_proto {
         pub struct Service<H>(pub H);
 
         impl<H: Handler> rpc_experiment::router::Service for Service<H> {
-            fn method(&self, method: u32) -> Option<bool> {
-                match method {
-                    SUBSCRIBE => Some(true),
-                    ALBUM_ART => Some(true),
-                    _ => None,
-                }
+            fn index(&self) -> usize {
+                INDEX
             }
 
             fn call(&mut self, server: &mut Server, call: IncomingCall<'_>) {
@@ -444,6 +523,9 @@ pub mod coprocessor_proto {
         use rpc_experiment::typed::{Call, Channel, Pack, Reply, Sink};
 
         use crate::generated::coprocessor_generated as fb;
+
+        /// This service's index in `METHODS`.
+        pub const INDEX: usize = 3;
 
         /// `CoprocessorProto.Wifi/Connect`
         pub const CONNECT: u32 = 0x10629345;
@@ -535,15 +617,8 @@ pub mod coprocessor_proto {
         pub struct Service<H>(pub H);
 
         impl<H: Handler> rpc_experiment::router::Service for Service<H> {
-            fn method(&self, method: u32) -> Option<bool> {
-                match method {
-                    CONNECT => Some(false),
-                    WATCH => Some(true),
-                    START_PROVISIONING => Some(false),
-                    STOP_PROVISIONING => Some(false),
-                    WATCH_PROVISIONING => Some(true),
-                    _ => None,
-                }
+            fn index(&self) -> usize {
+                INDEX
             }
 
             fn call(&mut self, server: &mut Server, call: IncomingCall<'_>) {
