@@ -11,12 +11,13 @@ src/rpc_generated.rs: schema/rpc.fbs schema/status.fbs
 	$(FLATC) --rust --gen-all -o src/ schema/rpc.fbs
 	$(RUSTFMT) $@
 
-$(GEN)/coprocessor_generated.rs: schema/coprocessor.fbs schema/rpc_attributes.fbs
-	$(FLATC) --rust --gen-object-api --gen-all -o $(GEN)/ schema/coprocessor.fbs
+# The test application's schema; it includes the framework's attributes.
+$(GEN)/coprocessor_generated.rs: tests/coprocessor.fbs schema/rpc_attributes.fbs
+	$(FLATC) --rust --gen-object-api --gen-all -I schema -o $(GEN)/ $<
 	$(RUSTFMT) $@
 
-$(BUILD)/%.json: schema/%.fbs schema/rpc_attributes.fbs rpcgen/reflection.fbs
-	$(FLATC) -b --schema --bfbs-builtins --bfbs-comments -o $(BUILD)/ $<
+$(BUILD)/%.json: tests/%.fbs schema/rpc_attributes.fbs rpcgen/reflection.fbs
+	$(FLATC) -b --schema --bfbs-builtins --bfbs-comments -I schema -o $(BUILD)/ $<
 	$(FLATC) --json --strict-json --raw-binary -o $(BUILD)/ rpcgen/reflection.fbs -- $(BUILD)/$*.bfbs
 
 $(GEN)/coprocessor_rpc.rs: $(BUILD)/coprocessor.json $(wildcard rpcgen/src/*.rs)
