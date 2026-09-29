@@ -1,18 +1,18 @@
 //! Generates typed Rust clients and handler traits from the `rpc_service`s of
-//! a flatbuffers schema, read as JSON:
+//! a flatbuffers binary schema:
 //!
 //!   flatc -b --schema --bfbs-builtins --bfbs-comments app.fbs
-//!   flatc --json --strict-json --raw-binary reflection.fbs -- app.bfbs
-//!   rpcgen app.json --types crate::app_generated [--rpc rpc_experiment] > app_rpc.rs
+//!   rpcgen app.bfbs --types crate::app_generated [--rpc rpc_experiment] > app_rpc.rs
 //!
-//! `--types` is where `flatc --rust --gen-object-api` output lives.
+//! `--bfbs-builtins` keeps the `streaming` attribute. `--types` is where
+//! `flatc --rust --gen-object-api` output lives.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::process::ExitCode;
 
-use rpc_experiment::method_id;
-use serde_json::Value;
+use flatbuffers_reflection::reflection;
+use rpc_experiment::{flatbuffers, method_id};
 
 const DEFAULT_TIMEOUT_MS: u64 = 5000;
 
@@ -36,7 +36,7 @@ fn parse_args() -> Result<Args, String> {
         }
     }
     Ok(Args {
-        input: input.ok_or("missing input JSON")?,
+        input: input.ok_or("missing input .bfbs")?,
         types: types.ok_or("missing --types")?,
         rpc,
     })
@@ -60,31 +60,61 @@ struct Service {
     methods: Vec<Method>,
 }
 
-fn strings(v: &Value) -> Vec<String> {
-    v.as_array()
-        .map(|a| a.iter().filter_map(|s| s.as_str().map(str::to_string)).collect())
-        .unwrap_or_default()
+/// An `rpc_service` as declared, before validation.
+struct ServiceDef {
+    /// Fully qualified, e.g. "CoprocessorProto.Wifi".
+    name: String,
+    doc: Vec<String>,
+    calls: Vec<CallDef>,
 }
 
-fn attributes(v: &Value) -> BTreeMap<String, String> {
-    v["attributes"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|a| Some((a["key"].as_str()?.to_string(), a["value"].as_str()?.to_string())))
+struct CallDef {
+    name: String,
+    request: String,
+    response: String,
+    attributes: BTreeMap<String, String>,
+    doc: Vec<String>,
+}
+
+fn strings<'a>(
+    v: Option<flatbuffers::Vector<'a, flatbuffers::ForwardsUOffset<&'a str>>>,
+) -> Vec<String> {
+    v.iter().flatten().map(str::to_string).collect()
+}
+
+/// Extracts the services of a binary schema.
+fn read(schema: reflection::Schema<'_>) -> Vec<ServiceDef> {
+    let services = schema.services().into_iter().flatten();
+    services
+        .map(|s| ServiceDef {
+            name: s.name().to_string(),
+            doc: strings(s.documentation()),
+            calls: (s.calls().into_iter().flatten())
+                .map(|c| CallDef {
+                    name: c.name().to_string(),
+                    request: c.request().name().to_string(),
+                    response: c.response().name().to_string(),
+                    attributes: (c.attributes().into_iter().flatten())
+                        .map(|kv| (kv.key().to_string(), kv.value().unwrap_or("").to_string()))
+                        .collect(),
+                    doc: strings(c.documentation()),
+                })
+                .collect(),
+        })
         .collect()
 }
 
-fn parse(schema: &Value) -> Result<Vec<Service>, String> {
+/// Validates attributes and assigns method ids.
+fn resolve(defs: &[ServiceDef]) -> Result<Vec<Service>, String> {
     let mut services = Vec::new();
     let mut ids: BTreeMap<u32, String> = BTreeMap::new();
-    for s in schema["services"].as_array().into_iter().flatten() {
-        let full = s["name"].as_str().ok_or("service without a name")?;
+    for s in defs {
+        let full = s.name.as_str();
         let (namespace, name) = full.rsplit_once('.').unwrap_or(("", full));
         let mut methods = Vec::new();
-        for c in s["calls"].as_array().into_iter().flatten() {
-            let name = c["name"].as_str().ok_or("call without a name")?.to_string();
-            let attrs = attributes(c);
+        for c in &s.calls {
+            let name = c.name.clone();
+            let attrs = &c.attributes;
             let streaming = match attrs.get("streaming").map(String::as_str) {
                 None | Some("none") => false,
                 Some("server") => true,
@@ -105,17 +135,17 @@ fn parse(schema: &Value) -> Result<Vec<Service>, String> {
                 name,
                 full_name,
                 id,
-                request: c["request"]["name"].as_str().ok_or("call without request")?.into(),
-                response: c["response"]["name"].as_str().ok_or("call without response")?.into(),
+                request: c.request.clone(),
+                response: c.response.clone(),
                 streaming,
                 timeout_ms,
-                doc: strings(&c["documentation"]),
+                doc: c.doc.clone(),
             });
         }
         services.push(Service {
             namespace: namespace.split('.').filter(|p| !p.is_empty()).map(str::to_string).collect(),
             name: name.to_string(),
-            doc: strings(&s["documentation"]),
+            doc: s.doc.clone(),
             methods,
         });
     }
@@ -360,10 +390,13 @@ fn service(out: &mut String, index: usize, s: &Service, rpc: &str, types: &str) 
 fn main() -> ExitCode {
     let run = || -> Result<String, String> {
         let args = parse_args()?;
-        let text =
-            std::fs::read_to_string(&args.input).map_err(|e| format!("{}: {e}", args.input))?;
-        let schema: Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
-        let services = parse(&schema)?;
+        let bfbs = std::fs::read(&args.input).map_err(|e| format!("{}: {e}", args.input))?;
+        if !reflection::schema_buffer_has_identifier(&bfbs) {
+            return Err(format!("{}: not a binary schema (flatc -b --schema)", args.input));
+        }
+        let schema =
+            reflection::root_as_schema(&bfbs).map_err(|e| format!("{}: {e}", args.input))?;
+        let services = resolve(&read(schema))?;
         let source = std::path::Path::new(&args.input)
             .file_name()
             .map_or(args.input.clone(), |f| f.to_string_lossy().into_owned());
@@ -385,8 +418,6 @@ fn main() -> ExitCode {
 mod tests {
     use std::collections::HashMap;
 
-    use serde_json::json;
-
     use super::*;
 
     /// Two methods of service `T.S` with the same id. By the birthday bound,
@@ -402,29 +433,32 @@ mod tests {
         unreachable!()
     }
 
-    fn schema(calls: &[&str]) -> Value {
-        let calls: Vec<Value> = calls
-            .iter()
-            .map(|c| json!({ "name": c, "request": { "name": "T.Req" }, "response": { "name": "T.Resp" } }))
-            .collect();
-        json!({ "services": [{ "name": "T.S", "calls": calls }] })
+    fn service(calls: &[&str]) -> ServiceDef {
+        let call = |name: &&str| CallDef {
+            name: name.to_string(),
+            request: "T.Req".into(),
+            response: "T.Resp".into(),
+            attributes: BTreeMap::new(),
+            doc: Vec::new(),
+        };
+        ServiceDef { name: "T.S".into(), doc: Vec::new(), calls: calls.iter().map(call).collect() }
     }
 
     #[test]
     fn method_id_collision_names_both_methods() {
         let (a, b) = colliding_names();
-        let err = parse(&schema(&[&a, &b])).err().unwrap();
+        let err = resolve(&[service(&[&a, &b])]).err().unwrap();
         assert!(err.contains(&format!("T.S/{a}")) && err.contains(&format!("T.S/{b}")), "{err}");
     }
 
     #[test]
     #[should_panic(expected = "duplicate key")]
     fn method_table_rejects_colliding_ids() {
-        // Bypasses parse() to check the phf table's own guard.
+        // Bypasses resolve()'s check to reach the phf table's own guard.
         let (a, b) = colliding_names();
         let args = Args { input: String::new(), types: "t".into(), rpc: "rpc".into() };
-        let mut services = parse(&schema(&[&a])).unwrap();
-        services.extend(parse(&schema(&[&b])).unwrap());
+        let mut services = resolve(&[service(&[&a])]).unwrap();
+        services.extend(resolve(&[service(&[&b])]).unwrap());
         generate(&services, &args, "test");
     }
 }

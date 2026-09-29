@@ -16,11 +16,10 @@ $(GEN)/coprocessor_generated.rs: tests/coprocessor.fbs schema/rpc_attributes.fbs
 	$(FLATC) --rust --gen-object-api --gen-all -I schema -o $(GEN)/ $<
 	$(RUSTFMT) $@
 
-$(BUILD)/%.json: tests/%.fbs schema/rpc_attributes.fbs rpcgen/reflection.fbs
+$(BUILD)/%.bfbs: tests/%.fbs schema/rpc_attributes.fbs
 	$(FLATC) -b --schema --bfbs-builtins --bfbs-comments -I schema -o $(BUILD)/ $<
-	$(FLATC) --json --strict-json --raw-binary -o $(BUILD)/ rpcgen/reflection.fbs -- $(BUILD)/$*.bfbs
 
-$(GEN)/coprocessor_rpc.rs: $(BUILD)/coprocessor.json $(wildcard rpcgen/src/*.rs)
+$(GEN)/coprocessor_rpc.rs: $(BUILD)/coprocessor.bfbs $(wildcard rpcgen/src/*.rs)
 	cargo run --offline -q -p rpcgen -- $< --types crate::generated::coprocessor_generated > $@.tmp
 	mv $@.tmp $@
 	$(RUSTFMT) $@
