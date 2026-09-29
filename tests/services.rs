@@ -11,10 +11,10 @@ use std::rc::Rc;
 
 use common::{ServerApp, Sim};
 use generated::coprocessor_generated::coprocessor_proto::*;
-use generated::coprocessor_rpc::coprocessor_proto::{clock, dashboard, sonos, wifi};
-use rpc_experiment::method_id;
+use generated::coprocessor_rpc::coprocessor_proto::{COPROCESSOR, clock, dashboard, sonos, wifi};
+use rpc_experiment::MethodId;
 use rpc_experiment::proto::Status;
-use rpc_experiment::router::Router;
+use rpc_experiment::router::{self, Router};
 use rpc_experiment::server::{Server, ServerEvent, StreamError};
 use rpc_experiment::typed::{Reply, Sink};
 
@@ -148,7 +148,7 @@ impl Coprocessor {
             art: (0..30_000u32).map(|i| (i * 7 % 251) as u8).collect(),
             ..Default::default()
         }));
-        let mut router = Router::new(&generated::coprocessor_rpc::METHODS);
+        let mut router = Router::new(COPROCESSOR);
         router.add(wifi::Service(wifi)).add(sonos::Service(sonos.clone()));
         Self { router, sonos }
     }
@@ -169,9 +169,31 @@ fn sim() -> Sim<Coprocessor> {
 }
 
 #[test]
-fn method_ids_are_hashes_of_full_names() {
-    assert_eq!(wifi::CONNECT, method_id("CoprocessorProto.Wifi/Connect"));
-    assert_eq!(sonos::ALBUM_ART, method_id("CoprocessorProto.Sonos/AlbumArt"));
+fn wire_ids_come_from_the_server_enum_and_method_order() {
+    // Weather (id 3) and Wifi.Scan (method 2) are deprecated.
+    assert_eq!((wifi::ID, clock::ID, dashboard::ID, sonos::ID), (0, 1, 2, 4));
+    assert_eq!(wifi::WATCH, MethodId::new(0, 1));
+    assert_eq!(wifi::START_PROVISIONING, MethodId::new(0, 3));
+    let (service, method) = router::lookup(COPROCESSOR, sonos::ALBUM_ART).unwrap();
+    assert_eq!((service.name, method.name), ("CoprocessorProto.Sonos", "AlbumArt"));
+}
+
+#[test]
+fn removed_services_and_methods_are_unimplemented() {
+    let mut sim = sim();
+    // A client built before Weather and Wifi.Scan were deprecated, and ids
+    // no schema ever had.
+    let stale = [
+        MethodId::new(3, 0),
+        MethodId::new(0, 2),
+        MethodId::new(200, 0),
+        MethodId::new(0, 9),
+    ];
+    let calls: Vec<_> = stale.iter().map(|&id| sim.client.call(id, vec![], 1_000)).collect();
+    sim.run_until(1_000, |_| calls.iter().all(|c| c.try_result().is_some()));
+    for (id, call) in stale.iter().zip(&calls) {
+        assert_eq!(call.try_result(), Some(Err(Status::UNIMPLEMENTED)), "{id:?}");
+    }
 }
 
 #[test]

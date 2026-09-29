@@ -8,6 +8,7 @@ use core::cell::RefCell;
 use core::future::poll_fn;
 use core::task::{Poll, Waker};
 
+use crate::MethodId;
 use crate::frame::{Frame, Header};
 use crate::link::{Link, LinkConfig, LinkState, LinkStats};
 use crate::proto::{Kind, Status};
@@ -174,14 +175,14 @@ impl Client {
 
     /// Starts a unary call that fails with DEADLINE_EXCEEDED after
     /// `timeout_ms`, counted from the last `poll_transmit` time.
-    pub fn call(&mut self, method: u32, payload: Vec<u8>, timeout_ms: u64) -> Call {
+    pub fn call(&mut self, method: MethodId, payload: Vec<u8>, timeout_ms: u64) -> Call {
         let deadline = Some(self.now + timeout_ms);
         let (call_id, slot) = self.start(Kind::Request, method, payload, 1, deadline);
         Call { call_id, slot, outbox: self.outbox.clone() }
     }
 
     /// Opens a server-streaming channel buffering up to `capacity` items.
-    pub fn open(&mut self, method: u32, payload: Vec<u8>, capacity: u16) -> Channel {
+    pub fn open(&mut self, method: MethodId, payload: Vec<u8>, capacity: u16) -> Channel {
         assert!(capacity > 0);
         let (call_id, slot) = self.start(Kind::Open, method, payload, capacity, None);
         Channel { call_id, slot, outbox: self.outbox.clone() }
@@ -190,7 +191,7 @@ impl Client {
     fn start(
         &mut self,
         kind: Kind,
-        method: u32,
+        MethodId { service, method }: MethodId,
         payload: Vec<u8>,
         credit: u16,
         deadline: Option<u64>,
@@ -209,7 +210,7 @@ impl Client {
                 deadline,
             },
         );
-        let header = Header { call_id, method, credit, ..Header::new(kind) };
+        let header = Header { call_id, service, method, credit, ..Header::new(kind) };
         self.link.send(header, payload);
         self.stats.calls += 1;
         (call_id, slot)

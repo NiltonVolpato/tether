@@ -14,19 +14,19 @@ pub mod server;
 pub mod typed;
 
 pub use flatbuffers;
-pub use phf;
 
-/// FNV-1a (32-bit) of a method's full name, e.g. "CoprocessorProto.Wifi/Connect".
-pub const fn method_id(full_name: &str) -> u32 {
-    let bytes = full_name.as_bytes();
-    let mut hash = 0x811c_9dc5u32;
-    let mut i = 0;
-    while i < bytes.len() {
-        hash ^= bytes[i] as u32;
-        hash = hash.wrapping_mul(0x0100_0193);
-        i += 1;
+/// A method's wire id: its service's value in the server's `rpc_server` enum
+/// and its position within that `rpc_service`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct MethodId {
+    pub service: u8,
+    pub method: u8,
+}
+
+impl MethodId {
+    pub const fn new(service: u8, method: u8) -> Self {
+        Self { service, method }
     }
-    hash
 }
 
 #[allow(clippy::all, unused_imports, dead_code, non_camel_case_types)]

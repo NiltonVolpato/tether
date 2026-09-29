@@ -19,10 +19,11 @@ enum Kind : ubyte {
     Hello,
     /// Link acknowledgement of the sequenced frame numbered `seq`.
     Ack,
-    /// Client -> server: unary call `call_id` to `method`. Payload: the request.
+    /// Client -> server: unary call `call_id` to `service`/`method`. Payload:
+    /// the request.
     Request,
-    /// Client -> server: open channel `call_id` to `method` with `credit`
-    /// initial slots. Payload: the request.
+    /// Client -> server: open channel `call_id` to `service`/`method` with
+    /// `credit` initial slots. Payload: the request.
     Open,
     /// Server -> client: unary result with `status`, payload when OK.
     Response,
@@ -41,8 +42,10 @@ table Header {
     /// Link sequence number; 0 for Hello, the acknowledged number for Ack.
     seq: uint16;
     call_id: uint32;
-    /// fnv1a_32 of the method's full name, e.g. "CoprocessorProto.Wifi/Connect".
-    method: uint32;
+    /// The service's value in the server's `rpc_server` enum.
+    service: ubyte;
+    /// The method's position in its `rpc_service`.
+    method: ubyte;
     credit: uint16;
     status: Common.Status;
 }

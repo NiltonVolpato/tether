@@ -4,6 +4,7 @@
 use alloc::collections::{BTreeMap, VecDeque};
 use alloc::vec::Vec;
 
+use crate::MethodId;
 use crate::frame::{Frame, Header};
 use crate::link::{Link, LinkConfig, LinkState, LinkStats};
 use crate::proto::{Kind, Status};
@@ -12,12 +13,12 @@ use crate::proto::{Kind, Status};
 pub enum ServerEvent {
     Call {
         call_id: u32,
-        method: u32,
+        method: MethodId,
         payload: Vec<u8>,
     },
     Open {
         call_id: u32,
-        method: u32,
+        method: MethodId,
         payload: Vec<u8>,
     },
     /// The client dropped the call; stop working on it (e.g. UNSUBSCRIBE).
@@ -145,7 +146,7 @@ impl Server {
                 self.calls.insert(h.call_id, None);
                 self.events.push_back(ServerEvent::Call {
                     call_id: h.call_id,
-                    method: h.method,
+                    method: MethodId::new(h.service, h.method),
                     payload: frame.payload,
                 });
             }
@@ -163,7 +164,7 @@ impl Server {
                 self.calls.insert(h.call_id, Some(Stream { credit: h.credit, latest: None }));
                 self.events.push_back(ServerEvent::Open {
                     call_id: h.call_id,
-                    method: h.method,
+                    method: MethodId::new(h.service, h.method),
                     payload: frame.payload,
                 });
             }

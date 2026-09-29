@@ -205,102 +205,66 @@ impl Pack for fb::coprocessor_proto::WifiStatusT {
     }
 }
 
-/// Every method in the schema, by method id.
-pub static METHODS: rpc_experiment::router::MethodTable = rpc_experiment::phf::Map {
-    key: 4203492208743950414,
-    disps: &[(1, 1), (0, 0), (0, 1)],
-    entries: &[
-        (
-            4123159542,
-            rpc_experiment::router::Method {
-                name: "CoprocessorProto.Wifi/StartProvisioning",
-                service: 3,
-                streaming: false,
-            },
-        ),
-        (
-            4109185957,
-            rpc_experiment::router::Method {
-                name: "CoprocessorProto.Wifi/WatchProvisioning",
-                service: 3,
-                streaming: true,
-            },
-        ),
-        (
-            1425643852,
-            rpc_experiment::router::Method {
-                name: "CoprocessorProto.Wifi/Watch",
-                service: 3,
-                streaming: true,
-            },
-        ),
-        (
-            274895685,
-            rpc_experiment::router::Method {
-                name: "CoprocessorProto.Wifi/Connect",
-                service: 3,
-                streaming: false,
-            },
-        ),
-        (
-            3145221233,
-            rpc_experiment::router::Method {
-                name: "CoprocessorProto.Clock/Watch",
-                service: 0,
-                streaming: true,
-            },
-        ),
-        (
-            2116529854,
-            rpc_experiment::router::Method {
-                name: "CoprocessorProto.Sonos/Subscribe",
-                service: 2,
-                streaming: true,
-            },
-        ),
-        (
-            3489350998,
-            rpc_experiment::router::Method {
-                name: "CoprocessorProto.Sonos/AlbumArt",
-                service: 2,
-                streaming: true,
-            },
-        ),
-        (
-            2468843691,
-            rpc_experiment::router::Method {
-                name: "CoprocessorProto.Dashboard/ReportBattery",
-                service: 1,
-                streaming: false,
-            },
-        ),
-        (
-            769966452,
-            rpc_experiment::router::Method {
-                name: "CoprocessorProto.Wifi/StopProvisioning",
-                service: 3,
-                streaming: false,
-            },
-        ),
-    ],
-};
-
 pub mod coprocessor_proto {
+    /// The co-processor's services. The values are wire ids: append only, and
+    /// deprecate instead of removing.
+    pub static COPROCESSOR: &rpc_experiment::router::ServerTable = &[
+        Some(rpc_experiment::router::ServiceInfo {
+            name: "CoprocessorProto.Wifi",
+            methods: &[
+                Some(rpc_experiment::router::MethodInfo { name: "Connect", streaming: false }),
+                Some(rpc_experiment::router::MethodInfo { name: "Watch", streaming: true }),
+                None,
+                Some(rpc_experiment::router::MethodInfo {
+                    name: "StartProvisioning",
+                    streaming: false,
+                }),
+                Some(rpc_experiment::router::MethodInfo {
+                    name: "StopProvisioning",
+                    streaming: false,
+                }),
+                Some(rpc_experiment::router::MethodInfo {
+                    name: "WatchProvisioning",
+                    streaming: true,
+                }),
+            ],
+        }),
+        Some(rpc_experiment::router::ServiceInfo {
+            name: "CoprocessorProto.Clock",
+            methods: &[Some(rpc_experiment::router::MethodInfo { name: "Watch", streaming: true })],
+        }),
+        Some(rpc_experiment::router::ServiceInfo {
+            name: "CoprocessorProto.Dashboard",
+            methods: &[Some(rpc_experiment::router::MethodInfo {
+                name: "ReportBattery",
+                streaming: false,
+            })],
+        }),
+        None,
+        Some(rpc_experiment::router::ServiceInfo {
+            name: "CoprocessorProto.Sonos",
+            methods: &[
+                Some(rpc_experiment::router::MethodInfo { name: "Subscribe", streaming: true }),
+                Some(rpc_experiment::router::MethodInfo { name: "AlbumArt", streaming: true }),
+            ],
+        }),
+    ];
+
     /// Network time.
     pub mod clock {
-        use rpc_experiment::flatbuffers;
         use rpc_experiment::proto::Status;
         use rpc_experiment::router::IncomingCall;
         use rpc_experiment::server::Server;
         use rpc_experiment::typed::{Call, Channel, Pack, Reply, Sink};
+        use rpc_experiment::{MethodId, flatbuffers};
 
         use crate::generated::coprocessor_generated as fb;
 
-        /// This service's index in `METHODS`.
-        pub const INDEX: usize = 0;
+        /// This service's id in its server's table.
+        pub const ID: u8 = 1;
 
         /// `CoprocessorProto.Clock/Watch`
-        pub const WATCH: u32 = 0xbb784471;
+        pub const WATCH: MethodId = MethodId::new(ID, 0);
 
         pub struct Client<'c>(pub &'c mut rpc_experiment::client::Client);
 
@@ -330,20 +294,18 @@ pub mod coprocessor_proto {
         pub struct Service<H>(pub H);
 
         impl<H: Handler> rpc_experiment::router::Service for Service<H> {
-            fn index(&self) -> usize {
-                INDEX
+            fn id(&self) -> u8 {
+                ID
             }
 
             fn call(&mut self, server: &mut Server, call: IncomingCall<'_>) {
                 match call.method {
-                    WATCH => {
-                        match flatbuffers::root::<fb::coprocessor_proto::Empty>(call.payload) {
-                            Ok(req) => self.0.watch(server, Sink::new(call.call_id), req),
-                            Err(_) => {
-                                let _ = server.end(call.call_id, Status::INVALID_ARGUMENT);
-                            }
+                    0 => match flatbuffers::root::<fb::coprocessor_proto::Empty>(call.payload) {
+                        Ok(req) => self.0.watch(server, Sink::new(call.call_id), req),
+                        Err(_) => {
+                            let _ = server.end(call.call_id, Status::INVALID_ARGUMENT);
                         }
-                    }
+                    },
                     _ => server.respond(call.call_id, Err(Status::UNIMPLEMENTED)),
                 }
             }
@@ -356,19 +318,19 @@ pub mod coprocessor_proto {
 
     /// Device state shown on the web dashboard.
     pub mod dashboard {
-        use rpc_experiment::flatbuffers;
         use rpc_experiment::proto::Status;
         use rpc_experiment::router::IncomingCall;
         use rpc_experiment::server::Server;
         use rpc_experiment::typed::{Call, Channel, Pack, Reply, Sink};
+        use rpc_experiment::{MethodId, flatbuffers};
 
         use crate::generated::coprocessor_generated as fb;
 
-        /// This service's index in `METHODS`.
-        pub const INDEX: usize = 1;
+        /// This service's id in its server's table.
+        pub const ID: u8 = 2;
 
         /// `CoprocessorProto.Dashboard/ReportBattery`
-        pub const REPORT_BATTERY: u32 = 0x932790ab;
+        pub const REPORT_BATTERY: MethodId = MethodId::new(ID, 0);
 
         pub struct Client<'c>(pub &'c mut rpc_experiment::client::Client);
 
@@ -395,20 +357,18 @@ pub mod coprocessor_proto {
         pub struct Service<H>(pub H);
 
         impl<H: Handler> rpc_experiment::router::Service for Service<H> {
-            fn index(&self) -> usize {
-                INDEX
+            fn id(&self) -> u8 {
+                ID
             }
 
             fn call(&mut self, server: &mut Server, call: IncomingCall<'_>) {
                 match call.method {
-                    REPORT_BATTERY => {
-                        match flatbuffers::root::<fb::coprocessor_proto::BatteryStatus>(
-                            call.payload,
-                        ) {
-                            Ok(req) => self.0.report_battery(server, Reply::new(call.call_id), req),
-                            Err(_) => server.respond(call.call_id, Err(Status::INVALID_ARGUMENT)),
-                        }
-                    }
+                    0 => match flatbuffers::root::<fb::coprocessor_proto::BatteryStatus>(
+                        call.payload,
+                    ) {
+                        Ok(req) => self.0.report_battery(server, Reply::new(call.call_id), req),
+                        Err(_) => server.respond(call.call_id, Err(Status::INVALID_ARGUMENT)),
+                    },
                     _ => server.respond(call.call_id, Err(Status::UNIMPLEMENTED)),
                 }
             }
@@ -421,21 +381,21 @@ pub mod coprocessor_proto {
 
     /// Sonos speakers, via UPnP on the co-processor.
     pub mod sonos {
-        use rpc_experiment::flatbuffers;
         use rpc_experiment::proto::Status;
         use rpc_experiment::router::IncomingCall;
         use rpc_experiment::server::Server;
         use rpc_experiment::typed::{Call, Channel, Pack, Reply, Sink};
+        use rpc_experiment::{MethodId, flatbuffers};
 
         use crate::generated::coprocessor_generated as fb;
 
-        /// This service's index in `METHODS`.
-        pub const INDEX: usize = 2;
+        /// This service's id in its server's table.
+        pub const ID: u8 = 4;
 
         /// `CoprocessorProto.Sonos/Subscribe`
-        pub const SUBSCRIBE: u32 = 0x7e27aebe;
+        pub const SUBSCRIBE: MethodId = MethodId::new(ID, 0);
         /// `CoprocessorProto.Sonos/AlbumArt`
-        pub const ALBUM_ART: u32 = 0xcffb4556;
+        pub const ALBUM_ART: MethodId = MethodId::new(ID, 1);
 
         pub struct Client<'c>(pub &'c mut rpc_experiment::client::Client);
 
@@ -480,23 +440,21 @@ pub mod coprocessor_proto {
         pub struct Service<H>(pub H);
 
         impl<H: Handler> rpc_experiment::router::Service for Service<H> {
-            fn index(&self) -> usize {
-                INDEX
+            fn id(&self) -> u8 {
+                ID
             }
 
             fn call(&mut self, server: &mut Server, call: IncomingCall<'_>) {
                 match call.method {
-                    SUBSCRIBE => {
-                        match flatbuffers::root::<fb::coprocessor_proto::SubscribeRequest>(
-                            call.payload,
-                        ) {
-                            Ok(req) => self.0.subscribe(server, Sink::new(call.call_id), req),
-                            Err(_) => {
-                                let _ = server.end(call.call_id, Status::INVALID_ARGUMENT);
-                            }
+                    0 => match flatbuffers::root::<fb::coprocessor_proto::SubscribeRequest>(
+                        call.payload,
+                    ) {
+                        Ok(req) => self.0.subscribe(server, Sink::new(call.call_id), req),
+                        Err(_) => {
+                            let _ = server.end(call.call_id, Status::INVALID_ARGUMENT);
                         }
-                    }
-                    ALBUM_ART => match flatbuffers::root::<fb::coprocessor_proto::AlbumArtRequest>(
+                    },
+                    1 => match flatbuffers::root::<fb::coprocessor_proto::AlbumArtRequest>(
                         call.payload,
                     ) {
                         Ok(req) => self.0.album_art(server, Sink::new(call.call_id), req),
@@ -516,27 +474,27 @@ pub mod coprocessor_proto {
 
     /// Wi-Fi and BLE provisioning.
     pub mod wifi {
-        use rpc_experiment::flatbuffers;
         use rpc_experiment::proto::Status;
         use rpc_experiment::router::IncomingCall;
         use rpc_experiment::server::Server;
         use rpc_experiment::typed::{Call, Channel, Pack, Reply, Sink};
+        use rpc_experiment::{MethodId, flatbuffers};
 
         use crate::generated::coprocessor_generated as fb;
 
-        /// This service's index in `METHODS`.
-        pub const INDEX: usize = 3;
+        /// This service's id in its server's table.
+        pub const ID: u8 = 0;
 
         /// `CoprocessorProto.Wifi/Connect`
-        pub const CONNECT: u32 = 0x10629345;
+        pub const CONNECT: MethodId = MethodId::new(ID, 0);
         /// `CoprocessorProto.Wifi/Watch`
-        pub const WATCH: u32 = 0x54f9994c;
+        pub const WATCH: MethodId = MethodId::new(ID, 1);
         /// `CoprocessorProto.Wifi/StartProvisioning`
-        pub const START_PROVISIONING: u32 = 0xf5c26bf6;
+        pub const START_PROVISIONING: MethodId = MethodId::new(ID, 3);
         /// `CoprocessorProto.Wifi/StopProvisioning`
-        pub const STOP_PROVISIONING: u32 = 0x2de4c174;
+        pub const STOP_PROVISIONING: MethodId = MethodId::new(ID, 4);
         /// `CoprocessorProto.Wifi/WatchProvisioning`
-        pub const WATCH_PROVISIONING: u32 = 0xf4ed33a5;
+        pub const WATCH_PROVISIONING: MethodId = MethodId::new(ID, 5);
 
         pub struct Client<'c>(pub &'c mut rpc_experiment::client::Client);
 
@@ -617,53 +575,44 @@ pub mod coprocessor_proto {
         pub struct Service<H>(pub H);
 
         impl<H: Handler> rpc_experiment::router::Service for Service<H> {
-            fn index(&self) -> usize {
-                INDEX
+            fn id(&self) -> u8 {
+                ID
             }
 
             fn call(&mut self, server: &mut Server, call: IncomingCall<'_>) {
                 match call.method {
-                    CONNECT => {
-                        match flatbuffers::root::<fb::coprocessor_proto::WifiConnectRequest>(
-                            call.payload,
-                        ) {
-                            Ok(req) => self.0.connect(server, Reply::new(call.call_id), req),
-                            Err(_) => server.respond(call.call_id, Err(Status::INVALID_ARGUMENT)),
-                        }
-                    }
-                    WATCH => {
-                        match flatbuffers::root::<fb::coprocessor_proto::Empty>(call.payload) {
-                            Ok(req) => self.0.watch(server, Sink::new(call.call_id), req),
-                            Err(_) => {
-                                let _ = server.end(call.call_id, Status::INVALID_ARGUMENT);
-                            }
-                        }
-                    }
-                    START_PROVISIONING => match flatbuffers::root::<
-                        fb::coprocessor_proto::StartProvisioningRequest,
-                    >(call.payload)
-                    {
-                        Ok(req) => self.0.start_provisioning(server, Reply::new(call.call_id), req),
+                    0 => match flatbuffers::root::<fb::coprocessor_proto::WifiConnectRequest>(
+                        call.payload,
+                    ) {
+                        Ok(req) => self.0.connect(server, Reply::new(call.call_id), req),
                         Err(_) => server.respond(call.call_id, Err(Status::INVALID_ARGUMENT)),
                     },
-                    STOP_PROVISIONING => {
-                        match flatbuffers::root::<fb::coprocessor_proto::Empty>(call.payload) {
+                    1 => match flatbuffers::root::<fb::coprocessor_proto::Empty>(call.payload) {
+                        Ok(req) => self.0.watch(server, Sink::new(call.call_id), req),
+                        Err(_) => {
+                            let _ = server.end(call.call_id, Status::INVALID_ARGUMENT);
+                        }
+                    },
+                    3 => {
+                        match flatbuffers::root::<fb::coprocessor_proto::StartProvisioningRequest>(
+                            call.payload,
+                        ) {
                             Ok(req) => {
-                                self.0.stop_provisioning(server, Reply::new(call.call_id), req)
+                                self.0.start_provisioning(server, Reply::new(call.call_id), req)
                             }
                             Err(_) => server.respond(call.call_id, Err(Status::INVALID_ARGUMENT)),
                         }
                     }
-                    WATCH_PROVISIONING => {
-                        match flatbuffers::root::<fb::coprocessor_proto::Empty>(call.payload) {
-                            Ok(req) => {
-                                self.0.watch_provisioning(server, Sink::new(call.call_id), req)
-                            }
-                            Err(_) => {
-                                let _ = server.end(call.call_id, Status::INVALID_ARGUMENT);
-                            }
+                    4 => match flatbuffers::root::<fb::coprocessor_proto::Empty>(call.payload) {
+                        Ok(req) => self.0.stop_provisioning(server, Reply::new(call.call_id), req),
+                        Err(_) => server.respond(call.call_id, Err(Status::INVALID_ARGUMENT)),
+                    },
+                    5 => match flatbuffers::root::<fb::coprocessor_proto::Empty>(call.payload) {
+                        Ok(req) => self.0.watch_provisioning(server, Sink::new(call.call_id), req),
+                        Err(_) => {
+                            let _ = server.end(call.call_id, Status::INVALID_ARGUMENT);
                         }
-                    }
+                    },
                     _ => server.respond(call.call_id, Err(Status::UNIMPLEMENTED)),
                 }
             }

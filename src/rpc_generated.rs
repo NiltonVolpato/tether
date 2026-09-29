@@ -200,10 +200,11 @@ pub mod rpc {
         pub const Hello: Self = Self(0);
         /// Link acknowledgement of the sequenced frame numbered `seq`.
         pub const Ack: Self = Self(1);
-        /// Client -> server: unary call `call_id` to `method`. Payload: the request.
+        /// Client -> server: unary call `call_id` to `service`/`method`. Payload:
+        /// the request.
         pub const Request: Self = Self(2);
-        /// Client -> server: open channel `call_id` to `method` with `credit`
-        /// initial slots. Payload: the request.
+        /// Client -> server: open channel `call_id` to `service`/`method` with
+        /// `credit` initial slots. Payload: the request.
         pub const Open: Self = Self(3);
         /// Server -> client: unary result with `status`, payload when OK.
         pub const Response: Self = Self(4);
@@ -315,9 +316,10 @@ pub mod rpc {
         pub const VT_KIND: ::flatbuffers::VOffsetT = 4;
         pub const VT_SEQ: ::flatbuffers::VOffsetT = 6;
         pub const VT_CALL_ID: ::flatbuffers::VOffsetT = 8;
-        pub const VT_METHOD: ::flatbuffers::VOffsetT = 10;
-        pub const VT_CREDIT: ::flatbuffers::VOffsetT = 12;
-        pub const VT_STATUS: ::flatbuffers::VOffsetT = 14;
+        pub const VT_SERVICE: ::flatbuffers::VOffsetT = 10;
+        pub const VT_METHOD: ::flatbuffers::VOffsetT = 12;
+        pub const VT_CREDIT: ::flatbuffers::VOffsetT = 14;
+        pub const VT_STATUS: ::flatbuffers::VOffsetT = 16;
 
         #[inline]
         pub unsafe fn init_from_table(table: ::flatbuffers::Table<'a>) -> Self {
@@ -334,11 +336,12 @@ pub mod rpc {
             args: &'args HeaderArgs,
         ) -> ::flatbuffers::WIPOffset<Header<'bldr>> {
             let mut builder = HeaderBuilder::new(_fbb);
-            builder.add_method(args.method);
             builder.add_call_id(args.call_id);
             builder.add_credit(args.credit);
             builder.add_seq(args.seq);
             builder.add_status(args.status);
+            builder.add_method(args.method);
+            builder.add_service(args.service);
             builder.add_kind(args.kind);
             builder.finish()
         }
@@ -365,13 +368,21 @@ pub mod rpc {
             // which contains a valid value in this slot
             unsafe { self._tab.get::<u32>(Header::VT_CALL_ID, Some(0)).unwrap() }
         }
-        /// fnv1a_32 of the method's full name, e.g. "CoprocessorProto.Wifi/Connect".
+        /// The service's value in the server's `rpc_server` enum.
         #[inline]
-        pub fn method(&self) -> u32 {
+        pub fn service(&self) -> u8 {
             // Safety:
             // Created from valid Table for this object
             // which contains a valid value in this slot
-            unsafe { self._tab.get::<u32>(Header::VT_METHOD, Some(0)).unwrap() }
+            unsafe { self._tab.get::<u8>(Header::VT_SERVICE, Some(0)).unwrap() }
+        }
+        /// The method's position in its `rpc_service`.
+        #[inline]
+        pub fn method(&self) -> u8 {
+            // Safety:
+            // Created from valid Table for this object
+            // which contains a valid value in this slot
+            unsafe { self._tab.get::<u8>(Header::VT_METHOD, Some(0)).unwrap() }
         }
         #[inline]
         pub fn credit(&self) -> u16 {
@@ -406,7 +417,8 @@ pub mod rpc {
                 .visit_field::<Kind>("kind", Self::VT_KIND, false)?
                 .visit_field::<u16>("seq", Self::VT_SEQ, false)?
                 .visit_field::<u32>("call_id", Self::VT_CALL_ID, false)?
-                .visit_field::<u32>("method", Self::VT_METHOD, false)?
+                .visit_field::<u8>("service", Self::VT_SERVICE, false)?
+                .visit_field::<u8>("method", Self::VT_METHOD, false)?
                 .visit_field::<u16>("credit", Self::VT_CREDIT, false)?
                 .visit_field::<super::common::Status>("status", Self::VT_STATUS, false)?
                 .finish();
@@ -417,7 +429,8 @@ pub mod rpc {
         pub kind: Kind,
         pub seq: u16,
         pub call_id: u32,
-        pub method: u32,
+        pub service: u8,
+        pub method: u8,
         pub credit: u16,
         pub status: super::common::Status,
     }
@@ -428,6 +441,7 @@ pub mod rpc {
                 kind: Kind::Hello,
                 seq: 0,
                 call_id: 0,
+                service: 0,
                 method: 0,
                 credit: 0,
                 status: super::common::Status::OK,
@@ -453,8 +467,12 @@ pub mod rpc {
             self.fbb_.push_slot::<u32>(Header::VT_CALL_ID, call_id, 0);
         }
         #[inline]
-        pub fn add_method(&mut self, method: u32) {
-            self.fbb_.push_slot::<u32>(Header::VT_METHOD, method, 0);
+        pub fn add_service(&mut self, service: u8) {
+            self.fbb_.push_slot::<u8>(Header::VT_SERVICE, service, 0);
+        }
+        #[inline]
+        pub fn add_method(&mut self, method: u8) {
+            self.fbb_.push_slot::<u8>(Header::VT_METHOD, method, 0);
         }
         #[inline]
         pub fn add_credit(&mut self, credit: u16) {
@@ -488,6 +506,7 @@ pub mod rpc {
             ds.field("kind", &self.kind());
             ds.field("seq", &self.seq());
             ds.field("call_id", &self.call_id());
+            ds.field("service", &self.service());
             ds.field("method", &self.method());
             ds.field("credit", &self.credit());
             ds.field("status", &self.status());

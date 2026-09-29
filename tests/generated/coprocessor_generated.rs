@@ -103,6 +103,110 @@ pub mod coprocessor_proto {
     }
 
     impl ::flatbuffers::SimpleToVerifyInSlice for ProvisioningState {}
+    #[deprecated(
+        since = "2.0.0",
+        note = "Use associated constants instead. This will no longer be generated in 2021."
+    )]
+    pub const ENUM_MIN_COPROCESSOR: u8 = 0;
+    #[deprecated(
+        since = "2.0.0",
+        note = "Use associated constants instead. This will no longer be generated in 2021."
+    )]
+    pub const ENUM_MAX_COPROCESSOR: u8 = 4;
+    #[deprecated(
+        since = "2.0.0",
+        note = "Use associated constants instead. This will no longer be generated in 2021."
+    )]
+    #[allow(non_camel_case_types)]
+    pub const ENUM_VALUES_COPROCESSOR: [Coprocessor; 5] = [
+        Coprocessor::Wifi,
+        Coprocessor::Clock,
+        Coprocessor::Dashboard,
+        Coprocessor::Weather,
+        Coprocessor::Sonos,
+    ];
+
+    /// The co-processor's services. The values are wire ids: append only, and
+    /// deprecate instead of removing.
+    #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+    #[repr(transparent)]
+    pub struct Coprocessor(pub u8);
+    #[allow(non_upper_case_globals)]
+    impl Coprocessor {
+        pub const Wifi: Self = Self(0);
+        pub const Clock: Self = Self(1);
+        pub const Dashboard: Self = Self(2);
+        /// A removed service; its id is never reused.
+        pub const Weather: Self = Self(3);
+        pub const Sonos: Self = Self(4);
+
+        pub const ENUM_MIN: u8 = 0;
+        pub const ENUM_MAX: u8 = 4;
+        pub const ENUM_VALUES: &'static [Self] =
+            &[Self::Wifi, Self::Clock, Self::Dashboard, Self::Weather, Self::Sonos];
+        /// Returns the variant's name or "" if unknown.
+        pub fn variant_name(self) -> Option<&'static str> {
+            match self {
+                Self::Wifi => Some("Wifi"),
+                Self::Clock => Some("Clock"),
+                Self::Dashboard => Some("Dashboard"),
+                Self::Weather => Some("Weather"),
+                Self::Sonos => Some("Sonos"),
+                _ => None,
+            }
+        }
+    }
+    impl ::core::fmt::Debug for Coprocessor {
+        fn fmt(&self, f: &mut ::core::fmt::Formatter) -> ::core::fmt::Result {
+            if let Some(name) = self.variant_name() {
+                f.write_str(name)
+            } else {
+                f.write_fmt(format_args!("<UNKNOWN {:?}>", self.0))
+            }
+        }
+    }
+    impl<'a> ::flatbuffers::Follow<'a> for Coprocessor {
+        type Inner = Self;
+        #[inline]
+        unsafe fn follow(buf: &'a [u8], loc: usize) -> Self::Inner {
+            let b = unsafe { ::flatbuffers::read_scalar_at::<u8>(buf, loc) };
+            Self(b)
+        }
+    }
+
+    impl ::flatbuffers::Push for Coprocessor {
+        type Output = Coprocessor;
+        #[inline]
+        unsafe fn push(&self, dst: &mut [u8], _written_len: usize) {
+            unsafe { ::flatbuffers::emplace_scalar::<u8>(dst, self.0) };
+        }
+    }
+
+    impl ::flatbuffers::EndianScalar for Coprocessor {
+        type Scalar = u8;
+        #[inline]
+        fn to_little_endian(self) -> u8 {
+            self.0.to_le()
+        }
+        #[inline]
+        #[allow(clippy::wrong_self_convention)]
+        fn from_little_endian(v: u8) -> Self {
+            let b = u8::from_le(v);
+            Self(b)
+        }
+    }
+
+    impl<'a> ::flatbuffers::Verifiable for Coprocessor {
+        #[inline]
+        fn run_verifier(
+            v: &mut ::flatbuffers::Verifier,
+            pos: usize,
+        ) -> Result<(), ::flatbuffers::InvalidFlatbuffer> {
+            u8::run_verifier(v, pos)
+        }
+    }
+
+    impl ::flatbuffers::SimpleToVerifyInSlice for Coprocessor {}
     pub enum EmptyOffset {}
     #[derive(Copy, Clone, PartialEq)]
 

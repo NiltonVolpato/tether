@@ -4,56 +4,72 @@ use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 
+use crate::MethodId;
 use crate::proto::Status;
 use crate::server::{Server, ServerEvent};
 
-/// An entry of the generated method table (`METHODS`), keyed by method id.
+/// A server's services, generated from its `rpc_server` enum and indexed by
+/// service id. Deprecated services are `None`.
+pub type ServerTable = [Option<ServiceInfo>];
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Method {
-    /// Full name, e.g. "CoprocessorProto.Wifi/Connect".
+pub struct ServiceInfo {
+    /// Full name, e.g. "CoprocessorProto.Wifi".
     pub name: &'static str,
-    /// Index of the method's service in the schema.
-    pub service: usize,
+    /// Indexed by method number. Deprecated methods are `None`.
+    pub methods: &'static [Option<MethodInfo>],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MethodInfo {
+    pub name: &'static str,
     pub streaming: bool,
 }
 
-pub type MethodTable = phf::Map<u32, Method>;
+/// Looks up a method, `None` if it's unknown or deprecated.
+pub fn lookup(table: &ServerTable, id: MethodId) -> Option<(&ServiceInfo, &MethodInfo)> {
+    let service = table.get(usize::from(id.service))?.as_ref()?;
+    Some((service, service.methods.get(usize::from(id.method))?.as_ref()?))
+}
 
 pub struct IncomingCall<'a> {
     pub call_id: u32,
-    pub method: u32,
+    /// The method's number within the service.
+    pub method: u8,
     pub payload: &'a [u8],
 }
 
 /// Implemented by generated code for each `rpc_service`.
 pub trait Service {
-    /// This service's index in the schema, as used by `Method::service`.
-    fn index(&self) -> usize;
+    /// This service's id in the server's table.
+    fn id(&self) -> u8;
     /// Handles a call to one of this service's methods.
     fn call(&mut self, server: &mut Server, call: IncomingCall<'_>);
     fn cancelled(&mut self, server: &mut Server, call_id: u32);
 }
 
 pub struct Router {
-    methods: &'static MethodTable,
+    table: &'static ServerTable,
     services: Vec<Option<Box<dyn Service>>>,
     /// Which service each open call belongs to, to route its cancellation.
-    owners: BTreeMap<u32, usize>,
+    owners: BTreeMap<u32, u8>,
 }
 
 impl Router {
-    pub fn new(methods: &'static MethodTable) -> Self {
-        Self { methods, services: Vec::new(), owners: BTreeMap::new() }
+    pub fn new(table: &'static ServerTable) -> Self {
+        let services = table.iter().map(|_| None).collect();
+        Self { table, services, owners: BTreeMap::new() }
     }
 
     /// Serves `service`; methods of services never added are UNIMPLEMENTED.
     pub fn add(&mut self, service: impl Service + 'static) -> &mut Self {
-        let i = service.index();
-        if self.services.len() <= i {
-            self.services.resize_with(i + 1, || None);
-        }
-        assert!(self.services[i].is_none(), "service {i} added twice");
-        self.services[i] = Some(Box::new(service));
+        let id = usize::from(service.id());
+        assert!(
+            self.table.get(id).is_some_and(Option::is_some),
+            "service {id} isn't in this server's table"
+        );
+        assert!(self.services[id].is_none(), "service {id} added twice");
+        self.services[id] = Some(Box::new(service));
         self
     }
 
@@ -73,8 +89,8 @@ impl Router {
                 self.dispatch(server, call_id, method, &payload, true)
             }
             ServerEvent::Cancelled { call_id } => {
-                if let Some(i) = self.owners.remove(&call_id)
-                    && let Some(service) = &mut self.services[i]
+                if let Some(id) = self.owners.remove(&call_id)
+                    && let Some(service) = &mut self.services[usize::from(id)]
                 {
                     service.cancelled(server, call_id);
                 }
@@ -88,16 +104,13 @@ impl Router {
         &mut self,
         server: &mut Server,
         call_id: u32,
-        method: u32,
+        id: MethodId,
         payload: &[u8],
         streaming: bool,
     ) {
-        let service = self
-            .methods
-            .get(&method)
-            .filter(|m| m.streaming == streaming)
-            .and_then(|m| Some((m.service, self.services.get_mut(m.service)?.as_mut()?)));
-        let Some((i, service)) = service else {
+        let known = lookup(self.table, id).is_some_and(|(_, m)| m.streaming == streaming);
+        let service = known.then(|| self.services[usize::from(id.service)].as_mut()).flatten();
+        let Some(service) = service else {
             if streaming {
                 let _ = server.end(call_id, Status::UNIMPLEMENTED);
             } else {
@@ -105,7 +118,7 @@ impl Router {
             }
             return;
         };
-        self.owners.insert(call_id, i);
-        service.call(server, IncomingCall { call_id, method, payload });
+        self.owners.insert(call_id, id.service);
+        service.call(server, IncomingCall { call_id, method: id.method, payload });
     }
 }

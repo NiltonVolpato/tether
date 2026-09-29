@@ -8,21 +8,21 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::task::{Context, Poll, Wake, Waker};
 
 use common::{ServerApp, Sim};
+use rpc_experiment::MethodId;
 use rpc_experiment::client::{Channel, Client};
 use rpc_experiment::frame::{self, Deframer, FrameError, Header};
 use rpc_experiment::link::{LinkConfig, LinkState};
-use rpc_experiment::method_id;
 use rpc_experiment::proto::{Kind, Status};
 use rpc_experiment::server::{Server, ServerEvent, StreamError};
 
 /// Unary: responds with the payload reversed.
-const ECHO: u32 = method_id("Test.Svc/Echo");
+const ECHO: MethodId = MethodId::new(0, 0);
 /// Streaming: sends payload[0] items numbered from 0, then ends OK.
-const COUNT: u32 = method_id("Test.Svc/Count");
+const COUNT: MethodId = MethodId::new(0, 1);
 /// Streaming, stays open; the test pushes items through `Server` directly.
-const SUBSCRIBE: u32 = method_id("Test.Svc/Subscribe");
+const SUBSCRIBE: MethodId = MethodId::new(0, 2);
 /// Unary that never responds.
-const BLACK_HOLE: u32 = method_id("Test.Svc/BlackHole");
+const BLACK_HOLE: MethodId = MethodId::new(0, 3);
 
 #[derive(Default)]
 struct App {
@@ -102,7 +102,8 @@ fn frame_roundtrip_and_alignment() {
         kind: Kind::Item,
         seq: u16::MAX,
         call_id: u32::MAX,
-        method: u32::MAX,
+        service: u8::MAX,
+        method: u8::MAX,
         credit: u16::MAX,
         status: Status::DATA_LOSS,
     };
@@ -192,7 +193,7 @@ fn unary_call() {
 #[test]
 fn unknown_method_returns_status() {
     let mut sim = clean();
-    let call = sim.client.call(99, vec![], 1_000);
+    let call = sim.client.call(MethodId::new(0, 99), vec![], 1_000);
     sim.run_until(1_000, |_| call.try_result().is_some());
     assert_eq!(call.try_result(), Some(Err(Status::UNIMPLEMENTED)));
 }

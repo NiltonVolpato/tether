@@ -51,6 +51,8 @@ rpc_service Wifi {
     Connect(WifiConnectRequest): Empty (timeout_ms: "1000");
     /// The current status, then every change.
     Watch(Empty): WifiStatus (streaming: "server");
+    /// Replaced by Watch; keeps its number.
+    Scan(Empty): Empty (deprecated);
     StartProvisioning(StartProvisioningRequest): Empty;
     StopProvisioning(Empty): Empty;
     WatchProvisioning(Empty): ProvisioningStatus (streaming: "server");
@@ -92,4 +94,15 @@ rpc_service Sonos {
     Subscribe(SubscribeRequest): GroupEvent (streaming: "server");
     /// Downloads album art in chunks.
     AlbumArt(AlbumArtRequest): AlbumArtChunk (streaming: "server");
+}
+
+/// The co-processor's services. The values are wire ids: append only, and
+/// deprecate instead of removing.
+enum Coprocessor : ubyte (rpc_server) {
+    Wifi,
+    Clock,
+    Dashboard,
+    /// A removed service; its id is never reused.
+    Weather (deprecated),
+    Sonos,
 }

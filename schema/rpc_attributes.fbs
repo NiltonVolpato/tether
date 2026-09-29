@@ -1,4 +1,11 @@
-// Method attributes understood by rpcgen. Application schemas include this.
+// Attributes understood by rpcgen. Application schemas include this.
+
+/// On a `ubyte` enum: the services one server offers. Each value names an
+/// `rpc_service` in the same namespace, and is that service's wire id. Append
+/// only; mark removed services `(deprecated)` instead of deleting them.
+/// Methods get their wire id from their position in the `rpc_service`, so the
+/// same rule applies to them.
+attribute "rpc_server";
 
 /// Unary calls: deadline in milliseconds (default 5000).
 attribute "timeout_ms";

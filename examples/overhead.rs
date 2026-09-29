@@ -16,7 +16,8 @@ fn main() {
             Header {
                 seq: 1234,
                 call_id: 57,
-                method: 0x1062_9345,
+                service: 4,
+                method: 1,
                 credit: 1,
                 ..Header::new(Kind::Request)
             },
