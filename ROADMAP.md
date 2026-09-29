@@ -23,12 +23,18 @@ Rust on the S3 (client); C++ on the co-processor (server).
 - [x] Router: direct-indexed dispatch; automatic `UNIMPLEMENTED` and `INVALID_ARGUMENT`
 - [x] Framework schemas kept apart from the test application's schema
 
-## API (`api` crate: traits and data objects only)
+## API (`api` crate: the generic middle layer; traits and data objects only)
+
+Generated code is the thin typed layer on top of it, and the core the
+schema-agnostic layer below it.
 
 - [x] Client traits: `Transport`, `RawCall`, `RawChannel`; typed `Call`, `Channel`, `Message`
 - [x] Server traits: `ServerTypes`, `RawReply`, `RawSink`, `Service`; typed `Reply`, `Sink`
 - [x] Data objects: `MethodId`, `CallId`, `Status`, `StreamError`, `ServerTable`
 - [x] Spec of generated code (a hand-written `Greeter`) and tests of user code against fakes
+- [x] A proxy using only the generic layer forwards calls, channels, credit and cancellation (test)
+- [ ] Router catch-all, so a proxy can serve services it doesn't know
+- [ ] Consider renaming `api`, since apps mostly use generated code
 - [ ] rpcgen generates code that depends only on `api`, as in the `Greeter` spec
 - [ ] The core implements `Transport` and `ServerTypes`; its router dispatches to `api::Service`
 - [ ] The core maps wire status codes to `api::Status`

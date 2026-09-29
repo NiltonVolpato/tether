@@ -2,101 +2,13 @@
 
 mod support;
 
-use std::pin::pin;
 use std::task::{Context, Poll, Waker};
 
-use api::{
-    CallId, Message, Pack, RawChannel, ServerTypes, Service, Sink, Status, StreamError, Transport,
-    lookup,
-};
+use api::{CallId, Pack, RawChannel, Service, Status, Transport, lookup};
+use support::app::{Polite, greeting, now, text};
 use support::fakes::{FakeTransport, Loop, Loopback, Recorder, Recording, Sent};
 use support::greeter;
-use support::text::{Text, TextT};
-
-/// Fakes answer at once, so one poll is enough.
-fn now<F: Future>(future: F) -> F::Output {
-    match pin!(future).poll(&mut Context::from_waker(Waker::noop())) {
-        Poll::Ready(output) => output,
-        Poll::Pending => panic!("still pending"),
-    }
-}
-
-fn text(bytes: &[u8]) -> String {
-    Message::<Text, _>::new(bytes).unwrap().get().to_string()
-}
-
-// --- Application code, as a user writes it ---
-
-/// App code on the S3: the greeting to show.
-async fn greeting<X: Transport>(greeter: &greeter::Client<X>, name: &str) -> String {
-    match greeter.say_hello(&TextT::new(name)).await {
-        Ok(reply) => reply.get().to_string(),
-        Err(Status::Unavailable) => "Offline".into(),
-        Err(status) => format!("Error: {status:?}"),
-    }
-}
-
-/// A handler on the co-processor: greets, and counts down as fast as each
-/// client reads.
-struct Polite<S: ServerTypes> {
-    countdowns: Vec<(Sink<S::Sink, TextT>, u32)>,
-    cancelled: Vec<CallId>,
-}
-
-impl<S: ServerTypes> Default for Polite<S> {
-    fn default() -> Self {
-        Self { countdowns: Vec::new(), cancelled: Vec::new() }
-    }
-}
-
-impl<S: ServerTypes> Polite<S> {
-    /// Sends what credit allows; runs whenever the handler gets a chance.
-    fn pump(&mut self) {
-        let mut waiting = Vec::new();
-        for (sink, mut next) in self.countdowns.drain(..) {
-            loop {
-                if next == 0 {
-                    sink.end(Ok(()));
-                    break;
-                }
-                match sink.send(&TextT::new(next.to_string())) {
-                    Ok(()) => next -= 1,
-                    Err(StreamError::NoCredit) => {
-                        waiting.push((sink, next));
-                        break;
-                    }
-                    Err(StreamError::Closed) => break,
-                }
-            }
-        }
-        self.countdowns = waiting;
-    }
-}
-
-impl<S: ServerTypes> greeter::Handler<S> for Polite<S> {
-    fn say_hello(&mut self, reply: api::Reply<S::Reply, TextT>, name: &str) {
-        if name.is_empty() {
-            reply.send(Err(Status::InvalidArgument));
-        } else {
-            reply.send(Ok(&TextT(format!("Hello, {name}!"))));
-        }
-    }
-
-    fn countdown(&mut self, sink: Sink<S::Sink, TextT>, from: &str) {
-        match from.parse() {
-            Ok(from) => {
-                self.countdowns.push((sink, from));
-                self.pump();
-            }
-            Err(_) => sink.end(Err(Status::InvalidArgument)),
-        }
-    }
-
-    fn cancelled(&mut self, call: CallId) {
-        self.cancelled.push(call);
-        self.countdowns.retain(|(sink, _)| sink.call_id() != call);
-    }
-}
+use support::text::TextT;
 
 // --- App code against a fake transport ---
 
