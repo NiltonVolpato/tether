@@ -11,3 +11,4 @@ members = ["api", "rpcgen"]
 flatbuffers = { version = "25.12.19", default-features = false }
 cobs = { version = "0.5.1", default-features = false, features = ["alloc"] }
 crc32fast = { version = "1.5.2", default-features = false }
+api = { version = "0.1.0", path = "api" }

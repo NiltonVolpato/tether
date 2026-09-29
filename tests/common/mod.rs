@@ -4,10 +4,10 @@
 
 use std::collections::VecDeque;
 
-use rpc_experiment::client::Client;
+use rpc_experiment::client::{Client, SharedClient};
 use rpc_experiment::link::{LinkConfig, LinkState};
 use rpc_experiment::router::Router;
-use rpc_experiment::server::{Server, ServerEvent};
+use rpc_experiment::server::{Server, ServerEvent, SharedServer};
 
 pub struct Rng(pub u64);
 
@@ -84,21 +84,21 @@ impl Pipe {
 
 /// What runs on the co-processor on top of `Server`.
 pub trait ServerApp {
-    fn handle(&mut self, server: &mut Server, event: ServerEvent);
+    fn handle(&mut self, server: &SharedServer, event: ServerEvent);
     /// Called once per simulated millisecond, after events.
-    fn tick(&mut self, _server: &mut Server) {}
+    fn tick(&mut self, _server: &SharedServer) {}
 }
 
 impl ServerApp for Router {
-    fn handle(&mut self, server: &mut Server, event: ServerEvent) {
+    fn handle(&mut self, server: &SharedServer, event: ServerEvent) {
         Router::handle(self, server, event);
     }
 }
 
 pub struct Sim<A> {
     pub now: u64,
-    pub client: Client,
-    pub server: Server,
+    pub client: SharedClient,
+    pub server: SharedServer,
     pub app: A,
     pub c2s: Pipe,
     pub s2c: Pipe,
@@ -109,8 +109,8 @@ impl<A: ServerApp> Sim<A> {
         let cfg = LinkConfig::default();
         Self {
             now: 0,
-            client: Client::new(0xC11E_0000 ^ seed as u32 | 1, cfg),
-            server: Server::new(0x5E4E_0000 ^ seed as u32 | 1, cfg, 4),
+            client: SharedClient::new(Client::new(0xC11E_0000 ^ seed as u32 | 1, cfg)),
+            server: Server::new(0x5E4E_0000 ^ seed as u32 | 1, cfg, 4).shared(),
             app,
             c2s: Pipe::new(seed.wrapping_mul(3), drop_pct, corrupt_pct),
             s2c: Pipe::new(seed.wrapping_mul(7), drop_pct, corrupt_pct),
@@ -118,23 +118,36 @@ impl<A: ServerApp> Sim<A> {
     }
 
     pub fn step(&mut self) {
-        while let Some(b) = self.client.poll_transmit(self.now) {
+        while let Some(b) = self.client.borrow_mut().poll_transmit(self.now) {
             self.c2s.push(self.now, b);
         }
-        while let Some(b) = self.server.poll_transmit(self.now) {
+        while let Some(b) = self.server.borrow_mut().poll_transmit(self.now) {
             self.s2c.push(self.now, b);
         }
         for chunk in self.c2s.deliver(self.now) {
-            self.server.receive(&chunk);
+            self.server.borrow_mut().receive(&chunk);
         }
         for chunk in self.s2c.deliver(self.now) {
-            self.client.receive(&chunk);
+            self.client.borrow_mut().receive(&chunk);
         }
-        while let Some(event) = self.server.poll_event() {
-            self.app.handle(&mut self.server, event);
+        loop {
+            let Some(event) = self.server.borrow_mut().poll_event() else { break };
+            self.app.handle(&self.server, event);
         }
-        self.app.tick(&mut self.server);
+        self.app.tick(&self.server);
         self.now += 1;
+    }
+
+    /// Steps until `poll` returns something; panics after `max_ms`.
+    pub fn wait<R>(&mut self, max_ms: u64, mut poll: impl FnMut() -> Option<R>) -> R {
+        let deadline = self.now + max_ms;
+        loop {
+            if let Some(r) = poll() {
+                return r;
+            }
+            assert!(self.now < deadline, "nothing within {max_ms} ms");
+            self.step();
+        }
     }
 
     pub fn run(&mut self, ms: u64) {
@@ -154,8 +167,8 @@ impl<A: ServerApp> Sim<A> {
 
     pub fn linked(&mut self) -> &mut Self {
         self.run_until(5_000, |s| {
-            matches!(s.client.link_state(), LinkState::Linked { .. })
-                && matches!(s.server.link_state(), LinkState::Linked { .. })
+            matches!(s.client.borrow().link_state(), LinkState::Linked { .. })
+                && matches!(s.server.borrow().link_state(), LinkState::Linked { .. })
         });
         self
     }

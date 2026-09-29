@@ -1,13 +1,17 @@
 //! The server (co-processor) side. Calls are addressed by call id; `Router`
-//! and the generated services wrap them in typed replies and sinks.
+//! hands services `ServerReply`s and `ServerSink`s that address them.
 
 use alloc::collections::{BTreeMap, VecDeque};
+use alloc::rc::Rc;
 use alloc::vec::Vec;
+use core::cell::RefCell;
 
-use crate::MethodId;
+use api::{CallId, MethodId, RawReply, RawSink, ServerTypes, Status, StreamError};
+
 use crate::frame::{Frame, Header};
 use crate::link::{Link, LinkConfig, LinkState, LinkStats};
-use crate::proto::{Kind, Status};
+use crate::proto::Kind;
+use crate::wire_status;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ServerEvent {
@@ -27,14 +31,6 @@ pub enum ServerEvent {
     },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StreamError {
-    /// The client hasn't consumed earlier items yet; try again later.
-    NoCredit,
-    /// Cancelled by the client, already ended, or never opened.
-    Closed,
-}
-
 struct Stream {
     credit: u16,
     /// Value waiting for credit in latest-value mode; newer values replace it.
@@ -48,6 +44,10 @@ pub struct Server {
     events: VecDeque<ServerEvent>,
 }
 
+/// The server as the router, replies and sinks share it. Everything that
+/// touches it must run on one executor.
+pub type SharedServer = Rc<RefCell<Server>>;
+
 impl Server {
     pub fn new(boot_id: u32, cfg: LinkConfig, max_streams: usize) -> Self {
         Self {
@@ -56,6 +56,10 @@ impl Server {
             calls: BTreeMap::new(),
             events: VecDeque::new(),
         }
+    }
+
+    pub fn shared(self) -> SharedServer {
+        Rc::new(RefCell::new(self))
     }
 
     pub fn link_state(&self) -> LinkState {
@@ -91,8 +95,8 @@ impl Server {
         }
         self.calls.remove(&call_id);
         let (status, payload) = match result {
-            Ok(p) => (Status::OK, p),
-            Err(s) => (s, Vec::new()),
+            Ok(p) => (wire_status(Ok(())), p),
+            Err(s) => (wire_status(Err(s)), Vec::new()),
         };
         self.link
             .send(Header { call_id, status, ..Header::new(Kind::Response) }, payload);
@@ -119,10 +123,11 @@ impl Server {
         self.send(call_id, payload)
     }
 
-    pub fn end(&mut self, call_id: u32, status: Status) -> Result<(), StreamError> {
+    pub fn end(&mut self, call_id: u32, result: Result<(), Status>) -> Result<(), StreamError> {
         self.stream(call_id)?;
         self.calls.remove(&call_id);
-        self.link.send(Header { call_id, status, ..Header::new(Kind::End) }, Vec::new());
+        let header = Header { call_id, status: wire_status(result), ..Header::new(Kind::End) };
+        self.link.send(header, Vec::new());
         Ok(())
     }
 
@@ -155,7 +160,7 @@ impl Server {
                 if streams >= self.max_streams {
                     let header = Header {
                         call_id: h.call_id,
-                        status: Status::RESOURCE_EXHAUSTED,
+                        status: wire_status(Err(Status::ResourceExhausted)),
                         ..Header::new(Kind::End)
                     };
                     self.link.send(header, Vec::new());
@@ -182,5 +187,55 @@ impl Server {
             }
             _ => {}
         }
+    }
+}
+
+impl ServerTypes for Server {
+    type Reply = ServerReply;
+    type Sink = ServerSink;
+}
+
+/// Answers one unary call on a shared server.
+pub struct ServerReply {
+    pub(crate) call: u32,
+    pub(crate) server: SharedServer,
+}
+
+impl RawReply for ServerReply {
+    fn call_id(&self) -> CallId {
+        CallId(self.call)
+    }
+
+    fn send(self, result: Result<&[u8], Status>) {
+        self.server.borrow_mut().respond(self.call, result.map(<[u8]>::to_vec));
+    }
+}
+
+/// The server's end of one channel on a shared server.
+#[derive(Clone)]
+pub struct ServerSink {
+    pub(crate) call: u32,
+    pub(crate) server: SharedServer,
+}
+
+impl RawSink for ServerSink {
+    fn call_id(&self) -> CallId {
+        CallId(self.call)
+    }
+
+    fn send(&self, item: &[u8]) -> Result<(), StreamError> {
+        self.server.borrow_mut().send(self.call, item.to_vec())
+    }
+
+    fn set_latest(&self, item: &[u8]) -> Result<(), StreamError> {
+        self.server.borrow_mut().set_latest(self.call, item.to_vec())
+    }
+
+    fn credit(&self) -> u16 {
+        self.server.borrow().credit(self.call).unwrap_or(0)
+    }
+
+    fn end(self, result: Result<(), Status>) {
+        let _ = self.server.borrow_mut().end(self.call, result);
     }
 }

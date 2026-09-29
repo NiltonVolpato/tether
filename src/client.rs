@@ -5,13 +5,14 @@ use alloc::collections::{BTreeMap, VecDeque};
 use alloc::rc::{Rc, Weak};
 use alloc::vec::Vec;
 use core::cell::RefCell;
-use core::future::poll_fn;
-use core::task::{Poll, Waker};
+use core::task::{Context, Poll, Waker};
 
-use crate::MethodId;
+use api::{MethodId, RawCall, RawChannel, Status, Transport};
+
+use crate::api_status;
 use crate::frame::{Frame, Header};
 use crate::link::{Link, LinkConfig, LinkState, LinkStats};
-use crate::proto::{Kind, Status};
+use crate::proto::Kind;
 
 /// What app handles ask the client to send on their behalf. They can't reach
 /// the client itself: it may be borrowed when they're dropped.
@@ -25,7 +26,7 @@ type Outbox = Rc<RefCell<Vec<Control>>>;
 #[derive(Default)]
 struct Slot {
     items: VecDeque<Vec<u8>>,
-    end: Option<Status>,
+    end: Option<Result<(), Status>>,
     waker: Option<Waker>,
 }
 
@@ -45,30 +46,32 @@ pub struct Channel {
 }
 
 impl Channel {
-    /// Next item; `None` once the server ended the channel (see `end_status`).
+    /// An item if one is waiting.
     pub fn try_recv(&self) -> Option<Vec<u8>> {
         let item = self.slot.borrow_mut().items.pop_front()?;
         self.outbox.borrow_mut().push(Control::Credit(self.call_id));
         Some(item)
     }
+}
 
-    pub async fn recv(&self) -> Option<Vec<u8>> {
-        poll_fn(|cx| {
-            if let Some(item) = self.try_recv() {
-                return Poll::Ready(Some(item));
-            }
-            let mut slot = self.slot.borrow_mut();
-            if slot.end.is_some() {
-                return Poll::Ready(None);
-            }
-            slot.waker = Some(cx.waker().clone());
-            Poll::Pending
-        })
-        .await
+impl RawChannel for Channel {
+    type Buf = Vec<u8>;
+
+    fn poll_recv(&mut self, cx: &mut Context<'_>) -> Poll<Option<Vec<u8>>> {
+        if let Some(item) = self.try_recv() {
+            return Poll::Ready(Some(item));
+        }
+        let mut slot = self.slot.borrow_mut();
+        if slot.end.is_some() {
+            return Poll::Ready(None);
+        }
+        slot.waker = Some(cx.waker().clone());
+        Poll::Pending
     }
 
-    pub fn end_status(&self) -> Option<Status> {
-        self.slot.borrow().end
+    fn end(&self) -> Option<Result<(), Status>> {
+        let slot = self.slot.borrow();
+        if slot.items.is_empty() { slot.end } else { None }
     }
 }
 
@@ -88,23 +91,24 @@ pub struct Call {
 }
 
 impl Call {
+    /// `None` while in progress. Can be asked again after it's done.
     pub fn try_result(&self) -> Option<Result<Vec<u8>, Status>> {
         let slot = self.slot.borrow();
-        Some(match slot.end? {
-            Status::OK => Ok(slot.items.front().cloned().unwrap_or_default()),
-            s => Err(s),
-        })
+        Some(slot.end?.map(|()| slot.items.front().cloned().unwrap_or_default()))
     }
+}
 
-    pub async fn result(self) -> Result<Vec<u8>, Status> {
-        poll_fn(|cx| match self.try_result() {
-            Some(r) => Poll::Ready(r),
+impl RawCall for Call {
+    type Buf = Vec<u8>;
+
+    fn poll_result(&mut self, cx: &mut Context<'_>) -> Poll<Result<Vec<u8>, Status>> {
+        match self.try_result() {
+            Some(result) => Poll::Ready(result),
             None => {
                 self.slot.borrow_mut().waker = Some(cx.waker().clone());
                 Poll::Pending
             }
-        })
-        .await
+        }
     }
 }
 
@@ -173,7 +177,7 @@ impl Client {
         self.calls.len()
     }
 
-    /// Starts a unary call that fails with DEADLINE_EXCEEDED after
+    /// Starts a unary call that fails with `DeadlineExceeded` after
     /// `timeout_ms`, counted from the last `poll_transmit` time.
     pub fn call(&mut self, method: MethodId, payload: Vec<u8>, timeout_ms: u64) -> Call {
         let deadline = Some(self.now + timeout_ms);
@@ -267,7 +271,7 @@ impl Client {
         for id in expired {
             if let Some(slot) = self.calls.get(&id).and_then(|e| e.slot.upgrade()) {
                 let mut slot = slot.borrow_mut();
-                slot.end = Some(Status::DEADLINE_EXCEEDED);
+                slot.end = Some(Err(Status::DeadlineExceeded));
                 wake(&mut slot);
             }
             self.stats.deadlines_exceeded += 1;
@@ -308,13 +312,45 @@ impl Client {
             Kind::Item if slot.items.len() >= capacity => self.stats.overruns += 1,
             Kind::Item => slot.items.push_back(frame.payload),
             _ => {
-                if h.status == Status::OK && h.kind == Kind::Response {
+                let result = api_status(h.status);
+                if result.is_ok() && h.kind == Kind::Response {
                     slot.items.push_back(frame.payload);
                 }
-                slot.end = Some(h.status);
+                slot.end = Some(result);
                 self.calls.remove(&h.call_id);
             }
         }
         wake(&mut slot);
+    }
+}
+
+/// The client as apps share it. It's a `RefCell`, so every app must run on
+/// the executor that also feeds it bytes.
+pub struct SharedClient(RefCell<Client>);
+
+impl SharedClient {
+    pub fn new(client: Client) -> Self {
+        Self(RefCell::new(client))
+    }
+}
+
+impl core::ops::Deref for SharedClient {
+    type Target = RefCell<Client>;
+
+    fn deref(&self) -> &RefCell<Client> {
+        &self.0
+    }
+}
+
+impl Transport for SharedClient {
+    type Call = Call;
+    type Channel = Channel;
+
+    fn call(&self, method: MethodId, request: &[u8], timeout_ms: u32) -> Call {
+        self.borrow_mut().call(method, request.to_vec(), timeout_ms.into())
+    }
+
+    fn open(&self, method: MethodId, request: &[u8], capacity: u16) -> Channel {
+        self.borrow_mut().open(method, request.to_vec(), capacity)
     }
 }

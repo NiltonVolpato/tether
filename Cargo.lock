@@ -130,6 +130,7 @@ dependencies = [
 name = "rpc-experiment"
 version = "0.1.0"
 dependencies = [
+ "api",
  "cobs",
  "crc32fast",
  "flatbuffers",
@@ -139,8 +140,8 @@ dependencies = [
 name = "rpcgen"
 version = "0.1.0"
 dependencies = [
+ "api",
  "flatbuffers-reflection",
- "rpc-experiment",
 ]
 
 [[package]]

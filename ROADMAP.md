@@ -35,14 +35,14 @@ schema-agnostic layer below it.
 - [x] A proxy using only the generic layer forwards calls, channels, credit and cancellation (test)
 - [ ] Router catch-all, so a proxy can serve services it doesn't know
 - [ ] Consider renaming `api`, since apps mostly use generated code
-- [ ] rpcgen generates code that depends only on `api`, as in the `Greeter` spec
-- [ ] The core implements `Transport` and `ServerTypes`; its router dispatches to `api::Service`
-- [ ] The core maps wire status codes to `api::Status`
+- [x] rpcgen generates code that depends only on `api`, as in the `Greeter` spec
+- [x] The core implements `Transport` and `ServerTypes`; its router dispatches to `api::Service`
+- [x] The core maps wire status codes to `api::Status`
 - [ ] Decide whether to ship the in-process `Loopback` fake to users (e.g. an `api-testing` crate)
 
 ## Core
 
-- [ ] Choose the interior mutability behind `Transport` and `ServerTypes` (depends on the S3 task/executor layout)
+- [ ] Choose the interior mutability behind `SharedClient` and `SharedServer` (a `RefCell` for now, i.e. one executor; depends on the S3 task/executor layout)
 - [ ] Liveness: ping and a retransmit limit, so a dead peer is detected (replaces Heartbeat)
 - [ ] Fixed-capacity memory: bounded tables and queues instead of `Vec`/`BTreeMap`/`VecDeque`
 - [ ] Bounded send queue with backpressure
