@@ -1,0 +1,58 @@
+// Framework schema. Knows nothing about the application's services.
+//
+// Wire frame (before COBS, followed by a 0x00 delimiter):
+//
+//   [CRC32 LE: 4B][size-prefixed Header][zero pad to 8][payload flatbuffer]
+//
+// The CRC covers everything after it and is checked before anything is
+// parsed, so the Header's size prefix can be trusted to find the payload.
+// Offsets are relative to the frame start, which the receiver decodes into an
+// 8-aligned buffer: the Header lands 4-aligned (so it must not contain 64-bit
+// fields) and the payload 8-aligned. The pad is omitted when there's no payload.
+
+include "status.fbs";
+
+namespace Rpc;
+
+enum Kind : ubyte {
+    /// Link handshake, unsequenced. Payload: Hello.
+    Hello,
+    /// Link acknowledgement of the sequenced frame numbered `seq`.
+    Ack,
+    /// Client -> server: unary call `call_id` to `method`. Payload: the request.
+    Request,
+    /// Client -> server: open channel `call_id` to `method` with `credit`
+    /// initial slots. Payload: the request.
+    Open,
+    /// Server -> client: unary result with `status`, payload when OK.
+    Response,
+    /// Server -> client: one item on channel `call_id`.
+    Item,
+    /// Server -> client: channel `call_id` closed with `status`.
+    End,
+    /// Client -> server: the app consumed `credit` more items of `call_id`.
+    Credit,
+    /// Client -> server: the client dropped `call_id`.
+    Cancel,
+}
+
+table Header {
+    kind: Kind;
+    /// Link sequence number; 0 for Hello, the acknowledged number for Ack.
+    seq: uint16;
+    call_id: uint32;
+    /// fnv1a_32 of the method's full name, e.g. "CoprocessorProto.Wifi/Connect".
+    method: uint32;
+    credit: uint16;
+    status: Common.Status;
+}
+
+/// Sent until the peer's Hello arrives. A Hello with a different `boot_id`
+/// after that means the peer rebooted.
+table Hello {
+    boot_id: uint32;
+    /// The peer's boot_id as seen by the sender, 0 if none yet.
+    peer_boot_id: uint32;
+}
+
+root_type Header;

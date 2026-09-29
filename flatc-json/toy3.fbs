@@ -1,0 +1,32 @@
+attribute "server";
+attribute "reliable";
+attribute "timeout_ms";
+attribute "state";
+
+namespace Toy;
+
+table Empty {}
+
+/// Ask the co-processor to join a network.
+table WifiConnectRequest {
+    ssid: string;
+    password: string;
+}
+
+table WifiStatus {
+    connected: bool;
+    ssid: string;
+}
+
+/// Implemented by the co-processor.
+rpc_service Coprocessor (server: "coprocessor") {
+    /// Join a Wi-Fi network.
+    WifiConnect(WifiConnectRequest): WifiStatus (reliable, timeout_ms: "10000");
+}
+
+/// Implemented by the S3.
+rpc_service Host {
+    WifiStatus(WifiStatus): Empty (state);
+}
+
+root_type Empty;

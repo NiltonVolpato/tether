@@ -1,0 +1,95 @@
+// The current coprocessor.fbs restated as services. The S3 is the only client;
+// everything the co-processor pushes arrives on channels the S3 opened.
+
+include "rpc_attributes.fbs";
+
+namespace CoprocessorProto;
+
+table Empty {}
+
+table WifiConnectRequest {
+    ssid: string;
+    password: string;
+}
+
+table WifiStatus {
+    connected: bool;
+    ip: string;
+    ssid: string;
+    rssi: int16;
+}
+
+table StartProvisioningRequest {
+    timeout_seconds: uint32;
+}
+
+enum ProvisioningState : ubyte {
+    Inactive = 0,
+    Active = 1,
+    Provisioned = 2,
+    TimedOut = 3,
+}
+
+table ProvisioningStatus {
+    state: ProvisioningState;
+}
+
+table TimeSync {
+    epoch_seconds: uint64;
+    subsec_micros: uint32;
+}
+
+table BatteryStatus {
+    millivolts: uint32;
+    percent: uint8;
+    is_plugged: bool;
+}
+
+/// Wi-Fi and BLE provisioning.
+rpc_service Wifi {
+    /// Starts joining a network; the outcome arrives on Watch.
+    Connect(WifiConnectRequest): Empty (timeout_ms: "1000");
+    /// The current status, then every change.
+    Watch(Empty): WifiStatus (streaming: "server");
+    StartProvisioning(StartProvisioningRequest): Empty;
+    StopProvisioning(Empty): Empty;
+    WatchProvisioning(Empty): ProvisioningStatus (streaming: "server");
+}
+
+/// Network time.
+rpc_service Clock {
+    /// The time whenever SNTP syncs, starting with the last sync if any.
+    Watch(Empty): TimeSync (streaming: "server");
+}
+
+/// Device state shown on the web dashboard.
+rpc_service Dashboard {
+    ReportBattery(BatteryStatus): Empty;
+}
+
+table SubscribeRequest {
+    group: string;
+}
+
+table GroupEvent {
+    group: string;
+    volume: uint8;
+    track: string;
+}
+
+table AlbumArtRequest {
+    url: string;
+}
+
+table AlbumArtChunk {
+    total_size: uint32;
+    data: [ubyte];
+}
+
+/// Sonos speakers, via UPnP on the co-processor.
+rpc_service Sonos {
+    /// GENA subscription to a group, unsubscribed when the channel is dropped.
+    Subscribe(SubscribeRequest): GroupEvent (streaming: "server");
+    /// Downloads album art in chunks.
+    AlbumArt(AlbumArtRequest): AlbumArtChunk (streaming: "server");
+}

@@ -1,0 +1,4 @@
+// Method attributes understood by rpcgen. Application schemas include this.
+
+/// Unary calls: deadline in milliseconds (default 5000).
+attribute "timeout_ms";

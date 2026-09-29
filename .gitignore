@@ -1,0 +1,4 @@
+/target
+/build
+/flatc-json/*.bfbs
+/flatc-json/*.json
