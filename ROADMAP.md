@@ -23,10 +23,20 @@ Rust on the S3 (client); C++ on the co-processor (server).
 - [x] Router: direct-indexed dispatch; automatic `UNIMPLEMENTED` and `INVALID_ARGUMENT`
 - [x] Framework schemas kept apart from the test application's schema
 
+## API (`api` crate: traits and data objects only)
+
+- [x] Client traits: `Transport`, `RawCall`, `RawChannel`; typed `Call`, `Channel`, `Message`
+- [x] Server traits: `ServerTypes`, `RawReply`, `RawSink`, `Service`; typed `Reply`, `Sink`
+- [x] Data objects: `MethodId`, `CallId`, `Status`, `StreamError`, `ServerTable`
+- [x] Spec of generated code (a hand-written `Greeter`) and tests of user code against fakes
+- [ ] rpcgen generates code that depends only on `api`, as in the `Greeter` spec
+- [ ] The core implements `Transport` and `ServerTypes`; its router dispatches to `api::Service`
+- [ ] The core maps wire status codes to `api::Status`
+- [ ] Decide whether to ship the in-process `Loopback` fake to users (e.g. an `api-testing` crate)
+
 ## Core
 
-- [ ] Choose the interior mutability for `Client` and `Server` (depends on the S3 task/executor layout)
-- [ ] `Sink` holds a server handle, so handlers no longer take `&mut Server`
+- [ ] Choose the interior mutability behind `Transport` and `ServerTypes` (depends on the S3 task/executor layout)
 - [ ] Liveness: ping and a retransmit limit, so a dead peer is detected (replaces Heartbeat)
 - [ ] Fixed-capacity memory: bounded tables and queues instead of `Vec`/`BTreeMap`/`VecDeque`
 - [ ] Bounded send queue with backpressure
