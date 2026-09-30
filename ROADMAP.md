@@ -94,7 +94,23 @@ schema-agnostic layer below it.
 
 ## Later
 
-- [ ] Move the framework to its own repository
+- [x] Move the framework to its own repository (github.com/NiltonVolpato/tether)
+
+Generalizing tether, beyond what t-encoder needs:
+
+- [ ] Client and server in both languages, so ends mix and match; tether-gen emits both
+- [ ] Rust core `no_std` without `alloc`: capacities as const generics, borrowed payloads (as
+      the C++ core); an `alloc` feature for more channels, deeper queues, owned payloads
+- [ ] Transports: split the link into framing + reliability under one session layer (calls,
+      channels, credits, cancellation). UART keeps COBS + CRC + retransmits; reliable streams
+      (USB CDC, TCP) need only framing; WebSocket, one message per frame
+- [ ] Talk to a device from a laptop over the network: the S3 serves tether over Wi-Fi
+- [ ] `Metrics` service: scrape with a unary call (Prometheus-style), or subscribe to a channel
+      (e.g. CPU usage live)
+- [ ] HTTP gateway: routes to methods (`GET /metrics` as Prometheus text), channels as SSE or
+      WebSocket; forwards through the S3 to the co-processor with the generic proxy and the
+      router catch-all
+- [ ] Computer-to-computer example (std, TCP), to illustrate the layering; not a gRPC competitor
 - [ ] tether-gen bundles flatc (via FFI): one tool from `.fbs` to generated code, for both
       Rust and C++; then a test crate's `build.rs` replaces the Makefile's test-schema rules
       and the `build/` directory. Findings so far (flatbuffers v25.12.19):
