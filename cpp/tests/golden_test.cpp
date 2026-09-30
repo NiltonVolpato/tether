@@ -127,7 +127,7 @@ TEST_P(GoldenFrame, DecodesAsFlatcDoes) {
 
 TEST_P(GoldenFrame, DecodesFromAByteStream) {
   const auto wire = unhex(GetParam()["wire"].get<std::string>());
-  Deframer<1024> deframer;
+  StaticDeframer<1024> deframer;
   std::vector<std::expected<std::pair<Header, std::string>, FrameError>>
       results;
   for (std::byte b : wire) {

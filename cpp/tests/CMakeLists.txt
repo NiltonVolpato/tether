@@ -9,7 +9,7 @@ FetchContent_Declare(
   FIND_PACKAGE_ARGS)
 FetchContent_MakeAvailable(googletest nlohmann_json)
 
-add_executable(tether_tests cobs_test.cpp crc32_test.cpp frame_test.cpp
+add_executable(tether_tests cobs_test.cpp crc32_test.cpp frame_test.cpp link_test.cpp
                          golden_test.cpp)
 target_link_libraries(tether_tests PRIVATE tether GTest::gmock_main
                                         nlohmann_json::nlohmann_json)

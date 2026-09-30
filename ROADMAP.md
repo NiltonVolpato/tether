@@ -55,7 +55,7 @@ schema-agnostic layer below it.
 
 ## C++ (co-processor)
 
-- [ ] C++ core: framing (done: COBS, CRC32, header, Deframer; passes the goldens), link, server, router
+- [ ] C++ core: framing (done: passes the goldens), link (done: host tests, event-driven sim), server, router
 - [ ] tether-gen C++ output: server table, handler interfaces, typed sinks and replies
 - [x] Cross-language conformance: shared golden frames (`golden/frames.json`, decoded by flatc)
 - [ ] Cross-language conformance: C++ core built into the Rust simulation tests

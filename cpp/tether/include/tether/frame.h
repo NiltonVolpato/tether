@@ -75,36 +75,42 @@ inline constexpr std::size_t kMaxHeaderSize = 64;
 [[nodiscard]] std::expected<Frame, FrameError> decode(
     std::span<std::byte> cobs_frame);
 
-// Splits a byte stream on 0x00 delimiters, keeping frames of up to `MaxFrame`
-// bytes (COBS-encoded, without the delimiter).
-template <std::size_t MaxFrame>
+// Splits a byte stream on 0x00 delimiters, decoding each frame in `buffer`:
+// its size bounds a frame's COBS-encoded size, and it must be 8-aligned. See
+// StaticDeframer for one with its own buffer.
 class Deframer {
  public:
+  explicit Deframer(std::span<std::byte> buffer);
+  Deframer(const Deframer&) = delete;
+  Deframer& operator=(const Deframer&) = delete;
+
   // Feeds one byte; returns a result when a delimiter completes a frame. The
-  // frame points into the deframer, and is valid until the next `push`.
-  std::optional<std::expected<Frame, FrameError>> push(std::byte b) {
-    if (b != std::byte{0}) {
-      if (len_ < buf_.size()) {
-        buf_[len_++] = b;
-      } else {
-        overflowed_ = true;
-      }
-      return std::nullopt;
-    }
-    const std::size_t len = std::exchange(len_, 0);
-    if (std::exchange(overflowed_, false)) {
-      return std::unexpected(FrameError::Overflow);
-    }
-    if (len == 0) {
-      return std::nullopt;
-    }
-    return decode(std::span(buf_).first(len));
-  }
+  // frame points into the buffer, and is valid until the next `push`.
+  std::optional<std::expected<Frame, FrameError>> push(std::byte b);
 
  private:
-  alignas(8) std::array<std::byte, MaxFrame> buf_{};
+  std::span<std::byte> buf_;
   std::size_t len_ = 0;
   bool overflowed_ = false;
+};
+
+namespace detail {
+
+// Storage that a class can take as its first base, so it's constructed before
+// the base that uses it.
+template <std::size_t Size>
+struct AlignedBytes {
+  alignas(8) std::array<std::byte, Size> bytes{};
+};
+
+}  // namespace detail
+
+// A Deframer with its own buffer, for frames of up to `MaxFrame` bytes
+// (COBS-encoded, without the delimiter).
+template <std::size_t MaxFrame>
+class StaticDeframer : private detail::AlignedBytes<MaxFrame>, public Deframer {
+ public:
+  StaticDeframer() : Deframer(this->bytes) {}
 };
 
 }  // namespace tether

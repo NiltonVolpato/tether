@@ -80,7 +80,7 @@ TEST(Frame, DeframerResyncsAfterGarbageAndOverflow) {
   stream.push_back(std::byte{0});
   stream.insert(stream.end(), good.begin(), good.end());
 
-  Deframer<1024> deframer;
+  StaticDeframer<1024> deframer;
   std::vector<std::expected<std::vector<std::byte>, FrameError>> results;
   for (std::byte b : stream) {
     if (auto result = deframer.push(b)) {
@@ -97,7 +97,7 @@ TEST(Frame, DeframerResyncsAfterGarbageAndOverflow) {
 }
 
 TEST(Frame, DeframerSkipsEmptyFrames) {
-  Deframer<64> deframer;
+  StaticDeframer<64> deframer;
   EXPECT_FALSE(deframer.push(std::byte{0}).has_value());
   EXPECT_FALSE(deframer.push(std::byte{0}).has_value());
 }

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstdlib>
 
+#include "arena.h"
 #include "tether/crc32.h"
 
 namespace tether {
@@ -12,24 +13,8 @@ constexpr std::size_t kCrcSize = 4;
 constexpr std::size_t kSizePrefix = 4;
 constexpr std::size_t kPayloadAlign = 8;
 
-// Hands a FlatBufferBuilder one fixed buffer instead of the heap. It's large
-// enough for any Header, so the builder never asks for more.
-class ArenaAllocator final : public flatbuffers::Allocator {
- public:
-  static constexpr std::size_t kSize = 2 * kMaxHeaderSize;
-
-  uint8_t* allocate(std::size_t size) override {
-    if (size > arena_.size()) {
-      std::abort();  // A Header outgrew kMaxHeaderSize.
-    }
-    return arena_.data();
-  }
-
-  void deallocate(uint8_t* /*p*/, std::size_t /*size*/) override {}
-
- private:
-  alignas(8) std::array<uint8_t, kSize> arena_{};
-};
+// Room for any Header.
+using HeaderArena = detail::ArenaAllocator<2 * kMaxHeaderSize>;
 
 uint32_t load_le32(std::span<const std::byte, 4> b) {
   return std::to_integer<uint32_t>(b[0]) |
@@ -48,8 +33,8 @@ std::array<std::byte, 4> le32(uint32_t v) {
 std::expected<std::size_t, FrameError> encode(
     const Header& header, std::span<const std::byte> payload,
     std::span<std::byte> out) {
-  ArenaAllocator arena;
-  flatbuffers::FlatBufferBuilder fbb(ArenaAllocator::kSize, &arena);
+  HeaderArena arena;
+  flatbuffers::FlatBufferBuilder fbb(HeaderArena::kSize, &arena);
   fbb.FinishSizePrefixed(wire::CreateHeader(
       fbb, header.kind, header.seq, header.call_id, header.service,
       header.method, header.credit, header.status));
@@ -130,6 +115,31 @@ std::expected<Frame, FrameError> decode(std::span<std::byte> cobs_frame) {
     return std::unexpected(FrameError::BadLayout);
   }
   return Frame{.header = header, .payload = body.subspan(start)};
+}
+
+Deframer::Deframer(std::span<std::byte> buffer) : buf_(buffer) {
+  if (reinterpret_cast<std::uintptr_t>(buffer.data()) % 8 != 0) {
+    std::abort();  // Payloads wouldn't be aligned for flatbuffers.
+  }
+}
+
+std::optional<std::expected<Frame, FrameError>> Deframer::push(std::byte b) {
+  if (b != std::byte{0}) {
+    if (len_ < buf_.size()) {
+      buf_[len_++] = b;
+    } else {
+      overflowed_ = true;
+    }
+    return std::nullopt;
+  }
+  const std::size_t len = std::exchange(len_, 0);
+  if (std::exchange(overflowed_, false)) {
+    return std::unexpected(FrameError::Overflow);
+  }
+  if (len == 0) {
+    return std::nullopt;
+  }
+  return decode(buf_.first(len));
 }
 
 }  // namespace tether

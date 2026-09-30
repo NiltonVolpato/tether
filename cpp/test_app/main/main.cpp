@@ -91,7 +91,7 @@ extern "C" void app_main() {
   // Tells the host it may start.
   send({.kind = tether::Kind::Ping}, {});
 
-  static tether::Deframer<kMaxFrame> deframer;
+  static tether::StaticDeframer<kMaxFrame> deframer;
   std::array<std::byte, 256> rx{};
   for (;;) {
     // uart_read_bytes waits for all the bytes asked for, so ask for what's
