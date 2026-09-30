@@ -47,7 +47,14 @@ schema-agnostic layer below it.
 - [x] Liveness: ping and a retransmit limit, so a dead peer is detected (replaces Heartbeat)
 - [x] Retransmit timeout sized to the frame: base + (frame + peer's largest frame) at the baud
       rate; a fixed 20 ms collapsed the link with ~1 KB frames at 921600 (found in QEMU)
-- [ ] Exponential backoff on retransmits, with liveness as a time budget instead of a count
+- [ ] Exponential backoff on retransmits, with liveness as a time budget instead of a count;
+      when needed
+- [ ] Batching: several messages per frame and one ack for several frames, when many small
+      messages queue up. Stop-and-wait pays ~44 B of framing, a 30 B ack and two turnarounds
+      per frame: modeled goodput for 32 B payloads is ~20% at 921600 and ~8% at 5 Mbaud (512 B:
+      80% and 58%), assuming 0.3 ms turnarounds
+- [ ] Link observability, so a clogged link can be diagnosed on the device: queue depth and
+      time in queue, round-trip times, retransmit and error rates
 - [x] Credits: the client scans its channels each poll (dropped ones are cancelled) and sends
       all grants in one Credit frame; replaces the handles' outbox
 - [ ] Fixed-capacity memory: bounded tables and queues instead of `Vec`/`BTreeMap`/`VecDeque`
@@ -81,7 +88,8 @@ schema-agnostic layer below it.
 - [ ] System channel the S3 opens at boot, for co-processor-initiated commands (e.g. timezone set from the web)
 - [ ] Sonos: GENA subscriptions as channels
 - [ ] Sonos: album art streamed in 512-byte chunks
-- [ ] Measure the UART error rate on the device at 921600, 2M and 5M baud; pick the baud rate
+- [ ] Measure the UART error rate on the device at 921600, 2M and 5M baud, and goodput by
+      message size (it pins down the turnaround the model guesses); pick the baud rate
 - [ ] Move the schemas and build rules into t-encoder
 
 ## Later
