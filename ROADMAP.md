@@ -38,7 +38,7 @@ schema-agnostic layer below it.
 - [x] rpcgen generates code that depends only on `rpc`, as in the `Greeter` spec
 - [x] The core implements `Transport` and `ServerTypes`; its router dispatches to `api::Service`
 - [x] The core maps wire status codes to `api::Status`
-- [ ] Decide whether to ship the in-process `Loopback` fake to users (e.g. an `rpc-testing` crate)
+- [ ] `rpc-testing` crate: ship the in-process `Loopback` fake to users
 
 ## Core (`rpc-core` crate)
 
