@@ -4,9 +4,6 @@ LLVM_BIN := /opt/homebrew/opt/llvm@22/bin
 BUILD := ../build/cpp
 
 NINJA := $(BUILD)/build.ninja
-# The compile commands come from AppleClang, which finds the SDK by itself;
-# LLVM's clang-tidy needs to be told.
-TIDY_SYSROOT := $(if $(filter Darwin,$(shell uname)),-extra-arg=-isysroot$(shell xcrun --show-sdk-path))
 TIDY_STAMP := $(BUILD)/.tidy.stamp
 FMT_STAMP := $(BUILD)/.fmt.stamp
 FMT_CHECK_STAMP := $(BUILD)/.fmt_check.stamp
@@ -37,8 +34,7 @@ $(TIDY_STAMP): $(SRCS) | $(NINJA)
 		-quiet \
 		-hide-progress \
 		-source-filter '.*/cpp/(tether/src|tests)/.*' \
-		-header-filter '.*/cpp/(tether/include|tether/src|tests)/.*\.h$$' \
-		$(TIDY_SYSROOT)
+		-header-filter '.*/cpp/(tether/include|tether/src|tests)/.*\.h$$'
 	@touch $(TIDY_STAMP)
 
 fmt: $(FMT_STAMP)

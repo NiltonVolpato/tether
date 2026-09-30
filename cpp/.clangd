@@ -1,0 +1,4 @@
+# The host build's compile commands (`make build`); clang-tidy checks come from
+# .clang-tidy.
+CompileFlags:
+  CompilationDatabase: ../build/cpp
