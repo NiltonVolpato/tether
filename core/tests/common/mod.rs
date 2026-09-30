@@ -36,6 +36,8 @@ pub struct Pipe {
     corrupt_pct: u64,
     /// Frames to drop unconditionally, counted from the start.
     pub drop_first: usize,
+    /// Drops everything: a disconnected wire or a hung peer.
+    pub cut: bool,
     in_flight: VecDeque<(u64, Vec<u8>)>,
 }
 
@@ -46,11 +48,15 @@ impl Pipe {
             drop_pct,
             corrupt_pct,
             drop_first: 0,
+            cut: false,
             in_flight: VecDeque::new(),
         }
     }
 
     pub fn push(&mut self, now: u64, mut bytes: Vec<u8>) {
+        if self.cut {
+            return;
+        }
         if self.drop_first > 0 {
             self.drop_first -= 1;
             return;

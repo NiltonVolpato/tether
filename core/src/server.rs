@@ -25,7 +25,8 @@ pub enum ServerEvent {
         method: MethodId,
         payload: Vec<u8>,
     },
-    /// The client dropped the call; stop working on it (e.g. UNSUBSCRIBE).
+    /// The client dropped the call, or the link went down; stop working on
+    /// it (e.g. UNSUBSCRIBE).
     Cancelled {
         call_id: u32,
     },
@@ -79,10 +80,23 @@ impl Server {
         while let Some(frame) = self.link.poll_receive() {
             self.dispatch(frame);
         }
+        self.check_link();
     }
 
     pub fn poll_transmit(&mut self, now: u64) -> Option<Vec<u8>> {
-        self.link.poll_transmit(now)
+        let wire = self.link.poll_transmit(now);
+        self.check_link();
+        wire
+    }
+
+    /// Once the link is down for good, cancels every open call.
+    fn check_link(&mut self) {
+        if !self.link.state().is_terminal() {
+            return;
+        }
+        for (call_id, _) in core::mem::take(&mut self.calls) {
+            self.events.push_back(ServerEvent::Cancelled { call_id });
+        }
     }
 
     pub fn poll_event(&mut self) -> Option<ServerEvent> {

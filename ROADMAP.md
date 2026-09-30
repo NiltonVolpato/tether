@@ -43,13 +43,14 @@ schema-agnostic layer below it.
 ## Core (`rpc-core` crate)
 
 - [ ] Choose the interior mutability behind `SharedClient` and `SharedServer` (a `RefCell` for now, i.e. one executor; depends on the S3 task/executor layout)
-- [ ] Liveness: ping and a retransmit limit, so a dead peer is detected (replaces Heartbeat)
+- [x] Liveness: ping and a retransmit limit, so a dead peer is detected (replaces Heartbeat)
+- [ ] Credits: the client scans its channels each poll (dropped ones are cancelled) and sends
+      all grants in one Credit frame; replaces the handles' outbox
 - [ ] Fixed-capacity memory: bounded tables and queues instead of `Vec`/`BTreeMap`/`VecDeque`
 - [ ] Bounded send queue with backpressure
 - [ ] Receive directly into 8-aligned buffers without copying
 - [ ] Per-method metrics (calls, errors, latency), keyed by `MethodId`
 - [ ] Logging hook that names methods via `router::lookup`
-- [ ] Optional: carry acks in outgoing frames; batch credits
 
 ## C++ (co-processor)
 
@@ -60,7 +61,7 @@ schema-agnostic layer below it.
 
 ## Integration
 
-- [ ] S3: embassy UART glue and task layout
+- [ ] S3: embassy UART glue and task layout; wake the I/O task when an app consumes or drops
 - [ ] Co-processor: FreeRTOS UART task glue
 - [ ] Port Wifi and provisioning to services
 - [ ] Port time sync and battery to services
@@ -80,4 +81,5 @@ schema-agnostic layer below it.
 
 ## Not planned
 
+- Acks carried in outgoing frames: saves ~5% on the busy direction of a full-duplex link
 - Schema evolution checks against the previous release (`flatc --conform`)

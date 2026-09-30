@@ -3,6 +3,10 @@
 //! Hello handshake, then stop-and-wait ARQ: one sequenced frame in flight per
 //! direction, retransmitted until acked; the receiver drops duplicates. The RPC
 //! layer on top can assume every frame arrives exactly once, in order.
+//!
+//! Liveness: a Ping goes out when nothing has arrived from the peer for a
+//! while, so an idle link is probed too. A frame retransmitted too often
+//! without an ack means the peer is gone.
 
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
@@ -13,6 +17,10 @@ use crate::proto::{Hello, HelloArgs, Kind};
 #[derive(Clone, Copy, Debug)]
 pub struct LinkConfig {
     pub retransmit_ms: u64,
+    /// Retransmits of one frame without an ack before the peer is lost.
+    pub max_retransmits: u32,
+    /// Silence from the peer, while linked, before a Ping goes out.
+    pub ping_interval_ms: u64,
     pub hello_interval_ms: u64,
     /// Largest COBS frame accepted, excluding the delimiter.
     pub max_frame: usize,
@@ -20,7 +28,13 @@ pub struct LinkConfig {
 
 impl Default for LinkConfig {
     fn default() -> Self {
-        Self { retransmit_ms: 20, hello_interval_ms: 50, max_frame: 1024 }
+        Self {
+            retransmit_ms: 20,
+            max_retransmits: 25,
+            ping_interval_ms: 250,
+            hello_interval_ms: 50,
+            max_frame: 1024,
+        }
     }
 }
 
@@ -33,6 +47,16 @@ pub enum LinkState {
     /// Terminal: the peer sent a Hello with a new boot id. The owner is
     /// expected to reboot; nothing is sent or delivered anymore.
     PeerRebooted,
+    /// Terminal: a frame went unacked through `max_retransmits` retransmits.
+    /// Nothing is sent or delivered anymore.
+    PeerLost,
+}
+
+impl LinkState {
+    /// Whether the link is down for good; the owner starts a new one.
+    pub fn is_terminal(self) -> bool {
+        matches!(self, Self::PeerRebooted | Self::PeerLost)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -41,6 +65,7 @@ pub struct LinkStats {
     pub frames_rx: u32,
     pub retransmits: u32,
     pub duplicates: u32,
+    pub pings: u32,
     pub cobs_errors: u32,
     pub crc_errors: u32,
     pub other_errors: u32,
@@ -51,6 +76,7 @@ struct InFlight {
     seq: u16,
     wire: Vec<u8>,
     sent_at: u64,
+    retransmits: u32,
 }
 
 pub struct Link {
@@ -67,6 +93,9 @@ pub struct Link {
     hello_reply_due: bool,
     last_hello_at: Option<u64>,
     // RX
+    /// A valid frame arrived since the last `poll_transmit`, which has the time.
+    heard: bool,
+    last_heard_at: u64,
     expected_seq: u16,
     delivered: VecDeque<Frame>,
 }
@@ -95,6 +124,8 @@ impl Link {
             ack_due: None,
             hello_reply_due: false,
             last_hello_at: None,
+            heard: false,
+            last_heard_at: 0,
             expected_seq: 1,
             delivered: VecDeque::new(),
         }
@@ -140,7 +171,10 @@ impl Link {
     }
 
     fn next_transmit(&mut self, now: u64) -> Option<Vec<u8>> {
-        if self.state == LinkState::PeerRebooted {
+        if core::mem::take(&mut self.heard) {
+            self.last_heard_at = now;
+        }
+        if self.state.is_terminal() {
             return None;
         }
         if let Some(seq) = self.ack_due.take() {
@@ -161,18 +195,28 @@ impl Link {
             return None;
         }
         if let Some(f) = &mut self.in_flight {
-            if now >= f.sent_at + self.cfg.retransmit_ms {
-                f.sent_at = now;
-                self.stats.retransmits += 1;
-                return Some(f.wire.clone());
+            if now < f.sent_at + self.cfg.retransmit_ms {
+                return None;
             }
-            return None;
+            if f.retransmits == self.cfg.max_retransmits {
+                self.state = LinkState::PeerLost;
+                return None;
+            }
+            f.sent_at = now;
+            f.retransmits += 1;
+            self.stats.retransmits += 1;
+            return Some(f.wire.clone());
+        }
+        if self.queue.is_empty() && now >= self.last_heard_at + self.cfg.ping_interval_ms {
+            self.stats.pings += 1;
+            self.queue.push_back((Header::new(Kind::Ping), Vec::new()));
         }
         let (mut header, payload) = self.queue.pop_front()?;
         header.seq = self.next_seq;
         self.next_seq = next(self.next_seq);
         let wire = frame::encode(&header, &payload);
-        self.in_flight = Some(InFlight { seq: header.seq, wire: wire.clone(), sent_at: now });
+        self.in_flight =
+            Some(InFlight { seq: header.seq, wire: wire.clone(), sent_at: now, retransmits: 0 });
         Some(wire)
     }
 
@@ -189,8 +233,11 @@ impl Link {
 
     fn handle_frame(&mut self, frame: Frame) {
         self.stats.frames_rx += 1;
+        if self.state.is_terminal() {
+            return;
+        }
+        self.heard = true;
         match (self.state, frame.header.kind) {
-            (LinkState::PeerRebooted, _) => {}
             (_, Kind::Hello) => self.handle_hello(&frame.payload),
             (LinkState::Linked { .. }, Kind::Ack) => {
                 if self.in_flight.as_ref().is_some_and(|f| f.seq == frame.header.seq) {
@@ -202,7 +249,9 @@ impl Link {
                 if seq == self.expected_seq {
                     self.expected_seq = next(seq);
                     self.ack_due = Some(seq);
-                    self.delivered.push_back(frame);
+                    if frame.header.kind != Kind::Ping {
+                        self.delivered.push_back(frame);
+                    }
                 } else if seq == prev(self.expected_seq) {
                     // Our ack was lost; ack again.
                     self.stats.duplicates += 1;
@@ -229,7 +278,7 @@ impl Link {
             LinkState::Linked { peer_boot_id } if peer_boot_id == boot_id => {}
             // Don't answer: the peer would link to us, then see our own new
             // Hello after we reboot and reboot again.
-            LinkState::Linked { .. } | LinkState::PeerRebooted => {
+            _ => {
                 self.state = LinkState::PeerRebooted;
                 return;
             }

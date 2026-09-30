@@ -7,8 +7,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::task::{Context, Poll, Wake, Waker};
 
-use rpc::{MethodId, RawChannel, Status, StreamError};
 use common::{ServerApp, Sim};
+use rpc::{MethodId, RawChannel, Status, StreamError};
 use rpc_core::client::{Channel, Client};
 use rpc_core::frame::{self, Deframer, FrameError, Header};
 use rpc_core::link::{LinkConfig, LinkState};
@@ -175,10 +175,81 @@ fn queued_hellos_from_one_boot_link_once() {
 fn peer_reboot_is_detected() {
     let mut sim = clean();
     sim.linked();
+    let call = sim.client.borrow_mut().call(BLACK_HOLE, vec![], 60_000);
+    sim.run(100);
     sim.server = Server::new(0xBEEF, LinkConfig::default(), 4).shared();
     sim.run_until(1_000, |s| s.client.borrow().link_state() == LinkState::PeerRebooted);
     // The rebooted server must not have linked to the doomed client.
     assert_eq!(sim.server.borrow().link_state(), LinkState::Connecting);
+    assert_eq!(call.try_result(), Some(Err(Status::Unavailable)));
+}
+
+#[test]
+fn idle_link_pings_sparingly() {
+    let mut sim = clean();
+    sim.linked();
+    sim.run(10_000);
+    let pings = sim.client.borrow().link_stats().pings + sim.server.borrow().link_stats().pings;
+    // A ping and its ack keep both sides quiet, so ideally one ping goes out
+    // per interval (40 in 10 s). Pings cross when both sides' timers expire
+    // within one latency of each other, which adds up to one more per interval.
+    assert!((40..=80).contains(&pings), "{pings} pings in 10 s");
+    assert!(matches!(sim.client.borrow().link_state(), LinkState::Linked { .. }));
+    assert!(matches!(sim.server.borrow().link_state(), LinkState::Linked { .. }));
+}
+
+#[test]
+fn idle_lossy_link_is_not_lost() {
+    for seed in 1..=30 {
+        let mut sim = lossy(seed, 15);
+        sim.linked();
+        sim.run(10_000);
+        assert!(
+            matches!(sim.client.borrow().link_state(), LinkState::Linked { .. }),
+            "seed {seed}"
+        );
+        assert!(
+            matches!(sim.server.borrow().link_state(), LinkState::Linked { .. }),
+            "seed {seed}"
+        );
+    }
+}
+
+#[test]
+fn silent_server_is_lost_and_calls_fail() {
+    let mut sim = clean();
+    let ch = sim.client.borrow_mut().open(SUBSCRIBE, vec![], 1);
+    let call = sim.client.borrow_mut().call(BLACK_HOLE, vec![], 60_000);
+    sim.run_until(1_000, |s| s.app.subscriptions.len() == 1 && s.app.unary_calls == 1);
+
+    sim.s2c.cut = true;
+    let cut_at = sim.now;
+    sim.run_until(2_000, |s| s.client.borrow().link_state() == LinkState::PeerLost);
+    // An idle link: one ping interval, then the retransmits.
+    let cfg = LinkConfig::default();
+    let bound = cfg.ping_interval_ms + (u64::from(cfg.max_retransmits) + 1) * cfg.retransmit_ms;
+    assert!(sim.now - cut_at <= bound + 10, "lost after {} ms", sim.now - cut_at);
+
+    assert_eq!(call.try_result(), Some(Err(Status::Unavailable)));
+    assert_eq!(ch.end(), Some(Err(Status::Unavailable)));
+    assert_eq!(sim.client.borrow().open_calls(), 0);
+    let late = sim.client.borrow_mut().call(ECHO, vec![1], 1_000);
+    assert_eq!(late.try_result(), Some(Err(Status::Unavailable)));
+}
+
+#[test]
+fn server_cancels_calls_when_client_is_lost() {
+    let mut sim = clean();
+    let _ch = sim.client.borrow_mut().open(SUBSCRIBE, vec![], 1);
+    sim.run_until(1_000, |s| s.app.subscriptions.len() == 1);
+    let call_id = sim.app.subscriptions[0];
+
+    sim.c2s.cut = true;
+    sim.run_until(2_000, |s| s.server.borrow().link_state() == LinkState::PeerLost);
+    sim.step();
+    assert_eq!(sim.app.cancelled, [call_id]);
+    assert_eq!(sim.server.borrow().open_calls(), 0);
+    assert_eq!(sim.server.borrow_mut().send(call_id, vec![1]), Err(StreamError::Closed));
 }
 
 // --- Unary ---

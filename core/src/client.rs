@@ -9,10 +9,10 @@ use core::task::{Context, Poll, Waker};
 
 use rpc::{MethodId, RawCall, RawChannel, Status, Transport};
 
-use crate::rpc_status;
 use crate::frame::{Frame, Header};
 use crate::link::{Link, LinkConfig, LinkState, LinkStats};
 use crate::proto::Kind;
+use crate::rpc_status;
 
 /// What app handles ask the client to send on their behalf. They can't reach
 /// the client itself: it may be borrowed when they're dropped.
@@ -203,6 +203,10 @@ impl Client {
         let call_id = self.next_call_id;
         self.next_call_id += 1;
         let slot = SlotRef::default();
+        if self.link.state().is_terminal() {
+            slot.borrow_mut().end = Some(Err(Status::Unavailable));
+            return (call_id, slot);
+        }
         // Registered before the request is queued, so there's always an entry
         // for anything the server sends back.
         self.calls.insert(
@@ -225,13 +229,30 @@ impl Client {
         while let Some(frame) = self.link.poll_receive() {
             self.dispatch(frame);
         }
+        self.check_link();
     }
 
     pub fn poll_transmit(&mut self, now: u64) -> Option<Vec<u8>> {
         self.now = now;
         self.flush_outbox();
         self.expire_deadlines(now);
-        self.link.poll_transmit(now)
+        let wire = self.link.poll_transmit(now);
+        self.check_link();
+        wire
+    }
+
+    /// Once the link is down for good, fails every pending call.
+    fn check_link(&mut self) {
+        if !self.link.state().is_terminal() {
+            return;
+        }
+        for (_, entry) in core::mem::take(&mut self.calls) {
+            if let Some(slot) = entry.slot.upgrade() {
+                let mut slot = slot.borrow_mut();
+                slot.end = Some(Err(Status::Unavailable));
+                wake(&mut slot);
+            }
+        }
     }
 
     fn flush_outbox(&mut self) {

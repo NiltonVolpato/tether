@@ -173,13 +173,13 @@ pub mod rpc {
         since = "2.0.0",
         note = "Use associated constants instead. This will no longer be generated in 2021."
     )]
-    pub const ENUM_MAX_KIND: u8 = 8;
+    pub const ENUM_MAX_KIND: u8 = 9;
     #[deprecated(
         since = "2.0.0",
         note = "Use associated constants instead. This will no longer be generated in 2021."
     )]
     #[allow(non_camel_case_types)]
-    pub const ENUM_VALUES_KIND: [Kind; 9] = [
+    pub const ENUM_VALUES_KIND: [Kind; 10] = [
         Kind::Hello,
         Kind::Ack,
         Kind::Request,
@@ -189,6 +189,7 @@ pub mod rpc {
         Kind::End,
         Kind::Credit,
         Kind::Cancel,
+        Kind::Ping,
     ];
 
     #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
@@ -216,9 +217,12 @@ pub mod rpc {
         pub const Credit: Self = Self(7);
         /// Client -> server: the client dropped `call_id`.
         pub const Cancel: Self = Self(8);
+        /// Link liveness probe, sequenced and acked like any other frame but not
+        /// delivered. Sent when nothing has arrived from the peer for a while.
+        pub const Ping: Self = Self(9);
 
         pub const ENUM_MIN: u8 = 0;
-        pub const ENUM_MAX: u8 = 8;
+        pub const ENUM_MAX: u8 = 9;
         pub const ENUM_VALUES: &'static [Self] = &[
             Self::Hello,
             Self::Ack,
@@ -229,6 +233,7 @@ pub mod rpc {
             Self::End,
             Self::Credit,
             Self::Cancel,
+            Self::Ping,
         ];
         /// Returns the variant's name or "" if unknown.
         pub fn variant_name(self) -> Option<&'static str> {
@@ -242,6 +247,7 @@ pub mod rpc {
                 Self::End => Some("End"),
                 Self::Credit => Some("Credit"),
                 Self::Cancel => Some("Cancel"),
+                Self::Ping => Some("Ping"),
                 _ => None,
             }
         }

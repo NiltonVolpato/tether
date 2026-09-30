@@ -35,6 +35,9 @@ enum Kind : ubyte {
     Credit,
     /// Client -> server: the client dropped `call_id`.
     Cancel,
+    /// Link liveness probe, sequenced and acked like any other frame but not
+    /// delivered. Sent when nothing has arrived from the peer for a while.
+    Ping,
 }
 
 table Header {
