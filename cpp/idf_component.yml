@@ -1,0 +1,7 @@
+version: "0.1.0"
+description: "Schema-driven RPC over a byte link (UART): the C++ core (server side)"
+dependencies:
+  idf: ">=6.0"
+files:
+  exclude:
+    - "tests/**/*"

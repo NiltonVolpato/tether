@@ -4,12 +4,16 @@ FLATC := flatc
 RUSTFMT := rustup run nightly rustfmt --edition 2024 --config-path .rustfmt.toml
 BUILD := build
 GEN := core/tests/generated
+CPP_GEN := cpp/generated/rpc
 
-all: core/src/rpc_generated.rs $(GEN)/coprocessor_generated.rs $(GEN)/coprocessor_rpc.rs
+all: core/src/rpc_generated.rs $(CPP_GEN)/rpc_generated.h $(GEN)/coprocessor_generated.rs $(GEN)/coprocessor_rpc.rs
 
 core/src/rpc_generated.rs: schema/rpc.fbs schema/status.fbs
 	$(FLATC) --rust --gen-all -o core/src/ schema/rpc.fbs
 	$(RUSTFMT) $@
+
+$(CPP_GEN)/rpc_generated.h: schema/rpc.fbs schema/status.fbs
+	$(FLATC) --cpp --cpp-std c++17 --scoped-enums --gen-all -o $(CPP_GEN)/ schema/rpc.fbs
 
 # The test application's schema; it includes the framework's attributes.
 $(GEN)/coprocessor_generated.rs: core/tests/coprocessor.fbs schema/rpc_attributes.fbs
