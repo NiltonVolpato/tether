@@ -3,7 +3,7 @@
 
 use std::path::Path;
 
-const SOURCES: &[&str] = &["idl_parser.cpp", "idl_gen_text.cpp", "reflection.cpp", "util.cpp"];
+const SOURCES: &[&str] = &["idl_parser.cpp", "util.cpp"];
 
 fn main() {
     let root = Path::new("flatbuffers");
