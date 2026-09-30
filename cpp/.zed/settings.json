@@ -1,0 +1,7 @@
+{
+  "languages": {
+    "C": {"language_servers": ["clangd", "!sourcekit-lsp"]},
+    "C++": {"language_servers": ["clangd", "!sourcekit-lsp"]},
+    "Swift": {"language_servers": []},
+  },
+}
