@@ -74,6 +74,9 @@ schema-agnostic layer below it.
 ## Later
 
 - [ ] Move the framework to its own repository
+- [ ] rpcgen bundles flatc (via FFI): one tool from `.fbs` to generated code, with
+      `rpc_attributes.fbs` on the include path automatically; then a test crate's
+      `build.rs` replaces the Makefile's test-schema rules and the `build/` directory
 
 ## Not planned
 
