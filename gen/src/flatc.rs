@@ -1,22 +1,16 @@
 //! flatc's schema parser, linked in (`flatc.cpp`, built by `build.rs`).
 
-use std::ffi::{CStr, CString, c_char};
-
-#[repr(C)]
-struct TetherSchema {
-    _private: [u8; 0],
-}
+use std::ffi::{CStr, CString, c_char, c_void};
 
 unsafe extern "C" {
     fn tether_schema_parse(
-        source: *const c_char,
         filename: *const c_char,
         include_paths: *const *const c_char,
-    ) -> *mut TetherSchema;
-    fn tether_schema_ok(schema: *const TetherSchema) -> bool;
-    fn tether_schema_messages(schema: *const TetherSchema) -> *const c_char;
-    fn tether_schema_bfbs(schema: *const TetherSchema, size: *mut usize) -> *const u8;
-    fn tether_schema_free(schema: *mut TetherSchema);
+        schema: *mut *mut u8,
+        size: *mut usize,
+        messages: *mut *mut c_char,
+    ) -> bool;
+    fn free(ptr: *mut c_void);
 }
 
 /// A binary schema, and the parser's warnings.
@@ -25,40 +19,40 @@ pub struct Compiled {
     pub warnings: String,
 }
 
-fn c_string(s: &str, what: &str) -> Result<CString, String> {
-    CString::new(s).map_err(|_| format!("{what} contains a NUL byte"))
+fn c_string(s: &str) -> Result<CString, String> {
+    CString::new(s).map_err(|_| format!("{s:?} contains a NUL byte"))
 }
 
 /// Parses the schema at `path` into a binary schema, as
 /// `flatc -b --schema --bfbs-builtins --bfbs-comments -I <include>...` does.
 pub fn binary_schema(path: &str, include: &[String]) -> Result<Compiled, String> {
-    let source = std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?;
-    let source = c_string(&source, path)?;
-    let filename = c_string(path, "the schema's path")?;
-    let include: Vec<CString> = (include.iter())
-        .map(|dir| c_string(dir, "an include path"))
-        .collect::<Result<_, _>>()?;
+    let filename = c_string(path)?;
+    let include: Vec<CString> =
+        include.iter().map(|dir| c_string(dir)).collect::<Result<_, _>>()?;
     let mut include_ptrs: Vec<*const c_char> = include.iter().map(|s| s.as_ptr()).collect();
     include_ptrs.push(std::ptr::null());
 
-    // SAFETY: every pointer is a NUL-terminated string, or the list's null
-    // terminator, that outlives the call; the result is freed once, below.
-    unsafe {
-        let schema = tether_schema_parse(source.as_ptr(), filename.as_ptr(), include_ptrs.as_ptr());
-        if schema.is_null() {
-            return Err(format!("{path}: out of memory"));
-        }
-        let messages = CStr::from_ptr(tether_schema_messages(schema)).to_string_lossy();
-        let result = if tether_schema_ok(schema) {
-            let mut size = 0;
-            let bfbs = tether_schema_bfbs(schema, &mut size);
-            let bfbs = std::slice::from_raw_parts(bfbs, size).to_vec();
-            Ok(Compiled { bfbs, warnings: messages.into_owned() })
-        } else {
-            Err(messages.trim_end().to_string())
-        };
-        tether_schema_free(schema);
-        result
+    let (mut schema, mut size, mut messages) = (std::ptr::null_mut(), 0, std::ptr::null_mut());
+    // SAFETY: the strings and the null-terminated list outlive the call. What
+    // it returns is malloc'd, copied, then freed once.
+    let (ok, bfbs, messages) = unsafe {
+        let ok = tether_schema_parse(
+            filename.as_ptr(),
+            include_ptrs.as_ptr(),
+            &mut schema,
+            &mut size,
+            &mut messages,
+        );
+        let bfbs = (!schema.is_null()).then(|| std::slice::from_raw_parts(schema, size).to_vec());
+        let text =
+            (!messages.is_null()).then(|| CStr::from_ptr(messages).to_string_lossy().into_owned());
+        free(schema.cast());
+        free(messages.cast());
+        (ok, bfbs, text.unwrap_or_default())
+    };
+    match bfbs {
+        Some(bfbs) if ok => Ok(Compiled { bfbs, warnings: messages }),
+        _ => Err(messages.trim_end().to_string()),
     }
 }
 
@@ -111,5 +105,30 @@ mod tests {
     fn reports_a_missing_file() {
         let err = binary_schema("no/such.fbs", &[]).err().unwrap();
         assert!(err.starts_with("no/such.fbs: "), "{err}");
+    }
+
+    #[test]
+    fn declares_the_framework_attributes() {
+        let source = "enum S: ubyte (rpc_server) { A }\n\
+                      table T {}\n\
+                      rpc_service A { Get(T): T (timeout_ms: \"1\"); }\n";
+        let compiled = binary_schema(&schema_file("undeclared", source), &[]).unwrap();
+        let schema = reflection::root_as_schema(&compiled.bfbs).unwrap();
+        let server = schema.enums().iter().find(|e| e.name() == "S").unwrap();
+        assert!(server.attributes().unwrap().iter().any(|kv| kv.key() == "rpc_server"));
+    }
+
+    #[test]
+    fn a_schema_may_declare_them_too() {
+        binary_schema(&repo("core/tests/coprocessor.fbs"), &[repo("schema")]).unwrap();
+        let source = "attribute \"rpc_server\";\nenum S: ubyte (rpc_server) { A }\n";
+        binary_schema(&schema_file("declared", source), &[]).unwrap();
+    }
+
+    #[test]
+    fn returns_warnings() {
+        let compiled =
+            binary_schema(&schema_file("warns", "table T { Bad: int; }\n"), &[]).unwrap();
+        assert!(compiled.warnings.contains("lowercase snake_case"), "{}", compiled.warnings);
     }
 }

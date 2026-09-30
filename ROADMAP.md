@@ -119,11 +119,9 @@ Generalizing tether, beyond what t-encoder needs:
   - `NewRustCodeGenerator()` / `NewCppCodeGenerator()` (`src/idl_gen_rust.h`,
     `src/idl_gen_cpp.h`) return a `CodeGenerator`; `GenerateCode(parser, path, filename)`
     returns a `Status`. Add their sources, and what they need, to `build.rs`.
-  - No `include "tether.fbs"` at all: `Parser::known_attributes_` is public, and
-    `known_attributes_["rpc_server"] = false` before parsing is what `attribute "rpc_server";`
-    does (`src/idl_parser.cpp`). Check that a schema declaring them anyway still parses.
-    Failing that, `SetLoadFileFunction` / `SetFileExistsFunction` (`util.h`) can serve an
-    embedded `tether.fbs`.
+  - tether-gen already predeclares `tether.fbs`'s attributes, so once it emits the types,
+    schemas needn't include it. Keep `tether.fbs` for flatc users (other languages).
+  - A separate FFI call: generate a language's code, returned to Rust to write.
   - The golden tests' `flatc --json` could go through the linked `GenText` too.
   - Not `flatc-fork` (crates.io; builds flatc with flatbuffers' whole CMake build):
     `flatc_fork::flatc()` is a path in Cargo's build directory, which `cargo install`
