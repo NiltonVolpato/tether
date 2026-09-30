@@ -1,42 +1,25 @@
 //! Golden frames: the wire format pinned down as bytes, for other
 //! implementations of the core (the C++ one) to test their decoders against.
 //!
-//! The test fails when the encoder's output changes. If the change is meant,
-//! regenerate with `UPDATE_GOLDEN=1 cargo test -p rpc-core --test golden` and
-//! commit `golden/frames.txt` along with it.
+//! `golden/frames.json` holds each frame's wire bytes and, for the valid ones,
+//! flatc's JSON decoding of its header and framework payload: expected values
+//! that come from the reference flatbuffers implementation, not from this crate.
+//! The format is described in `golden/README.md`.
+//!
+//! The tests fail when the encoder's output changes. If the change is meant,
+//! regenerate (this needs flatc) with
+//! `UPDATE_GOLDEN=1 cargo test -p rpc-core --test golden` and commit the file.
 
-use std::fmt::Write;
+use std::path::Path;
+use std::process::Command;
+use std::sync::OnceLock;
 
 use rpc_core::frame::{self, FrameError, Header};
 use rpc_core::proto::{self, Credits, CreditsArgs, Grant, Hello, HelloArgs, Kind, Status};
+use serde_json::{Value, json};
 
-const PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../golden/frames.txt");
-
-const PREAMBLE: &str = "\
-# Golden frames for the wire format in schema/rpc.fbs.
-# Written by core/tests/golden.rs; do not edit.
-#
-# One block per frame, blocks separated by a blank line, one `key value...`
-# per line. Integers are decimal, bytes are lowercase hex (`-` when empty).
-#
-# `wire` is the frame as sent: COBS-encoded, with the trailing 0x00.
-#
-# A frame with `kind` must decode to exactly these header fields and payload
-# bytes. Framework payloads are given as fields too: `hello` is a Hello's
-# boot_id and peer_boot_id, and each `grant` is one of a Credits' grants
-# (call_id, credit), in order.
-#
-# A frame with `error` must fail to decode with that error:
-#   Cobs       invalid COBS
-#   TooShort   no room for the CRC and the header's size prefix
-#   Crc        CRC mismatch
-#   BadHeader  CRC passes, but the header overruns the frame or fails to verify
-#   BadLayout  non-zero padding before the payload
-#
-# Encoders need not reproduce these bytes: flatbuffers builders may order
-# fields, share vtables and pad differently. An encoder's frames must decode to
-# the same fields instead.
-";
+const PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../golden/frames.json");
+const SCHEMA: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../schema/rpc.fbs");
 
 enum Expect {
     Frame {
@@ -232,54 +215,154 @@ fn cases() -> Vec<Case> {
 }
 
 fn hex(bytes: &[u8]) -> String {
-    if bytes.is_empty() {
-        return "-".into();
-    }
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-fn render(cases: &[Case]) -> String {
-    let mut out = String::from(PREAMBLE);
-    for case in cases {
-        writeln!(out, "\nname {}", case.name).unwrap();
-        match &case.expect {
-            Expect::Frame { header: h, payload, hello, grants } => {
-                writeln!(out, "kind {}", h.kind.variant_name().unwrap()).unwrap();
-                writeln!(out, "seq {}", h.seq).unwrap();
-                writeln!(out, "call_id {}", h.call_id).unwrap();
-                writeln!(out, "service {}", h.service).unwrap();
-                writeln!(out, "method {}", h.method).unwrap();
-                writeln!(out, "credit {}", h.credit).unwrap();
-                writeln!(out, "status {}", h.status.variant_name().unwrap()).unwrap();
-                writeln!(out, "payload {}", hex(payload)).unwrap();
-                if let Some((boot_id, peer_boot_id)) = hello {
-                    writeln!(out, "hello {boot_id} {peer_boot_id}").unwrap();
-                }
-                for (call_id, credit) in grants {
-                    writeln!(out, "grant {call_id} {credit}").unwrap();
-                }
-            }
-            Expect::Error(e) => writeln!(out, "error {e:?}").unwrap(),
-        }
-        writeln!(out, "wire {}", hex(&case.wire)).unwrap();
+fn unhex(hex: &str) -> Vec<u8> {
+    (0..hex.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
+        .collect()
+}
+
+/// The root type of a framework payload, which flatc can decode.
+fn payload_type(kind: Kind) -> Option<&'static str> {
+    match kind {
+        Kind::Hello => Some("Rpc.Hello"),
+        Kind::Credit => Some("Rpc.Credits"),
+        _ => None,
     }
-    out
+}
+
+/// flatc's JSON for a flatbuffer of type `root`.
+fn flatc_json(name: &str, bytes: &[u8], root: &str, size_prefixed: bool) -> Value {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("golden");
+    std::fs::create_dir_all(&dir).unwrap();
+    let bin = dir.join(format!("{name}.bin"));
+    std::fs::write(&bin, bytes).unwrap();
+    let mut flatc = Command::new("flatc");
+    flatc.args(["--json", "--strict-json", "--defaults-json", "--raw-binary"]);
+    if size_prefixed {
+        flatc.arg("--size-prefixed");
+    }
+    flatc
+        .args(["--root-type", root, "-o"])
+        .arg(&dir)
+        .arg(SCHEMA)
+        .arg("--")
+        .arg(&bin);
+    let status = flatc.status().expect("regenerating the goldens needs flatc");
+    assert!(status.success(), "flatc failed on {name}");
+    let json = std::fs::read_to_string(dir.join(format!("{name}.json"))).unwrap();
+    serde_json::from_str(&json).unwrap()
+}
+
+/// The frame as stored in `frames.json`.
+fn golden(case: &Case) -> Value {
+    let Expect::Frame { header, .. } = &case.expect else {
+        let Expect::Error(e) = &case.expect else { unreachable!() };
+        return json!({ "name": case.name, "wire": hex(&case.wire), "error": format!("{e:?}") });
+    };
+    // Split the body the way the decoder does, but by hand, so flatc sees the
+    // exact bytes on the wire.
+    let body = cobs::decode_vec(&case.wire[..case.wire.len() - 1]).unwrap();
+    let header_end = 8 + u32::from_le_bytes(body[4..8].try_into().unwrap()) as usize;
+    let payload = match header_end == body.len() {
+        true => &[][..],
+        false => &body[header_end.next_multiple_of(8)..],
+    };
+    let name = case.name;
+    json!({
+        "name": name,
+        "wire": hex(&case.wire),
+        "header": flatc_json(&format!("{name}.header"), &body[4..header_end], "Rpc.Header", true),
+        "payload": match payload_type(header.kind) {
+            Some(root) => flatc_json(&format!("{name}.payload"), payload, root, false),
+            None => Value::String(hex(payload)),
+        },
+    })
+}
+
+/// The stored frames, regenerated first (once, as tests run in parallel) with
+/// `UPDATE_GOLDEN`.
+fn stored() -> &'static [Value] {
+    static STORED: OnceLock<Vec<Value>> = OnceLock::new();
+    STORED.get_or_init(|| {
+        if std::env::var_os("UPDATE_GOLDEN").is_some() {
+            let frames: Vec<_> = cases().iter().map(golden).collect();
+            std::fs::create_dir_all(Path::new(PATH).parent().unwrap()).unwrap();
+            std::fs::write(PATH, serde_json::to_string_pretty(&frames).unwrap() + "\n").unwrap();
+        }
+        let text = std::fs::read_to_string(PATH).expect("golden/frames.json");
+        serde_json::from_str(&text).unwrap()
+    })
+}
+
+/// A decoded header as flatc prints it.
+fn header_json(h: &Header) -> Value {
+    json!({
+        "kind": h.kind.variant_name().unwrap(),
+        "seq": h.seq,
+        "call_id": h.call_id,
+        "service": h.service,
+        "method": h.method,
+        "credit": h.credit,
+        "status": h.status.variant_name().unwrap(),
+    })
+}
+
+/// A decoded framework payload as flatc prints it.
+fn payload_json(kind: Kind, payload: &[u8]) -> Value {
+    match kind {
+        Kind::Hello => {
+            let h = flatbuffers::root::<Hello>(payload).unwrap();
+            json!({ "boot_id": h.boot_id(), "peer_boot_id": h.peer_boot_id() })
+        }
+        Kind::Credit => {
+            let c = flatbuffers::root::<Credits>(payload).unwrap();
+            let grants: Vec<_> = (c.grants().unwrap().iter())
+                .map(|g| json!({ "call_id": g.call_id(), "credit": g.credit() }))
+                .collect();
+            json!({ "grants": grants })
+        }
+        _ => Value::String(hex(payload)),
+    }
 }
 
 #[test]
 fn golden_frames_are_unchanged() {
-    let rendered = render(&cases());
-    if std::env::var_os("UPDATE_GOLDEN").is_some() {
-        std::fs::create_dir_all(std::path::Path::new(PATH).parent().unwrap()).unwrap();
-        std::fs::write(PATH, &rendered).unwrap();
-        return;
+    let stored = stored();
+    let cases = cases();
+    let names = |v: &[Value]| -> Vec<String> {
+        v.iter().map(|f| f["name"].as_str().unwrap().to_owned()).collect()
+    };
+    let expected: Vec<_> = cases.iter().map(|c| c.name.to_owned()).collect();
+    assert_eq!(names(stored), expected, "golden frames added, removed or reordered");
+    for (golden, case) in stored.iter().zip(&cases) {
+        assert!(
+            golden["wire"] == hex(&case.wire),
+            "{}: the encoder's output changed. If the wire format change is meant, \
+             regenerate with UPDATE_GOLDEN=1 and update the C++ core too.",
+            case.name
+        );
     }
-    let stored = std::fs::read_to_string(PATH).unwrap_or_default();
-    assert!(
-        stored == rendered,
-        "golden/frames.txt differs from the encoder's output. If the wire format \
-         change is meant, regenerate with UPDATE_GOLDEN=1 and update the C++ core too."
-    );
+}
+
+#[test]
+fn golden_frames_decode_as_flatc_does() {
+    for golden in stored() {
+        let name = golden["name"].as_str().unwrap();
+        let wire = unhex(golden["wire"].as_str().unwrap());
+        let decoded = frame::decode(&wire[..wire.len() - 1]);
+        if let Some(error) = golden.get("error") {
+            let got = decoded.map(|f| f.header).map_err(|e| format!("{e:?}"));
+            assert_eq!(got, Err(error.as_str().unwrap().to_owned()), "{name}");
+            continue;
+        }
+        let f = decoded.unwrap_or_else(|e| panic!("{name}: {e:?}"));
+        assert_eq!(header_json(&f.header), golden["header"], "{name}: header");
+        assert_eq!(payload_json(f.header.kind, &f.payload), golden["payload"], "{name}: payload");
+    }
 }
 
 #[test]
