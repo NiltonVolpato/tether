@@ -4,11 +4,11 @@ mod support;
 
 use std::task::{Context, Poll, Waker};
 
-use tether::{CallId, Pack, RawChannel, Service, Status, Transport, lookup};
 use support::app::{Polite, greeting, now, text};
 use support::fakes::{FakeTransport, Loop, Loopback, Recorder, Recording, Sent};
 use support::greeter;
 use support::text::TextT;
+use tether::{CallId, Pack, RawChannel, Service, Status, Transport, lookup};
 
 // --- App code against a fake transport ---
 

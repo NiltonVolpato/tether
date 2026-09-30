@@ -6,14 +6,14 @@ mod support;
 
 use std::task::{Context, Poll, Waker};
 
-use tether::{
-    CallId, MethodId, RawCall, RawChannel, RawReply, RawSink, ServerTypes, Service, Status,
-    Transport,
-};
 use support::app::{Polite, greeting, now};
 use support::fakes::{Loop, Loopback};
 use support::greeter;
 use support::text::TextT;
+use tether::{
+    CallId, MethodId, RawCall, RawChannel, RawReply, RawSink, ServerTypes, Service, Status,
+    Transport,
+};
 
 /// Serves service `id` by forwarding its calls to `upstream`.
 struct Proxy<S: ServerTypes, X: Transport> {

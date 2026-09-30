@@ -12,8 +12,8 @@ use tether::{MethodId, RawChannel, Status, StreamError};
 use tether_core::client::{Channel, Client};
 use tether_core::frame::{self, Deframer, FrameError, Header};
 use tether_core::link::{LinkConfig, LinkState};
-use tether_core::wire::{self, Kind};
 use tether_core::server::{Server, ServerEvent, SharedServer};
+use tether_core::wire::{self, Kind};
 
 /// Unary: responds with the payload reversed.
 const ECHO: MethodId = MethodId::new(0, 0);

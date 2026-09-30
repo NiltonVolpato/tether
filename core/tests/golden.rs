@@ -14,9 +14,9 @@ use std::path::Path;
 use std::process::Command;
 use std::sync::OnceLock;
 
+use serde_json::{Value, json};
 use tether_core::frame::{self, FrameError, Header};
 use tether_core::wire::{self, Credits, CreditsArgs, Grant, Hello, HelloArgs, Kind, Status};
-use serde_json::{Value, json};
 
 const PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../golden/frames.json");
 const SCHEMA: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../schema/wire.fbs");

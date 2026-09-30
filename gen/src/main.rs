@@ -12,8 +12,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::process::ExitCode;
 
-use tether::flatbuffers;
 use flatbuffers_reflection::reflection;
+use tether::flatbuffers;
 
 const DEFAULT_TIMEOUT_MS: u32 = 5000;
 

@@ -12,8 +12,8 @@ use tether::{MethodId, RawCall, RawChannel, Status, Transport};
 
 use crate::frame::{Frame, Header};
 use crate::link::{Link, LinkConfig, LinkState, LinkStats};
-use crate::wire::{Credits, CreditsArgs, Grant, Kind};
 use crate::tether_status;
+use crate::wire::{Credits, CreditsArgs, Grant, Kind};
 
 #[derive(Default)]
 struct Slot {
