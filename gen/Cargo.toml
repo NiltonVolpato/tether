@@ -7,3 +7,6 @@ publish = false
 [dependencies]
 tether = { version = "0.1.0", path = "../tether" }
 flatbuffers-reflection = "0.1"
+
+[build-dependencies]
+cc = "1"

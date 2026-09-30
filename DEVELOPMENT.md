@@ -7,13 +7,16 @@
 | `tether/`        | `tether`: the API (traits and data objects) apps depend on   |
 | `core/`          | `tether-core`: the sans-IO Rust core (framing, link, client, server) |
 | `gen/`           | `tether-gen`: generates typed clients and services from a schema |
+| `gen/flatbuffers/` | flatbuffers v25.12.19 (a submodule), whose schema parser `tether-gen` links |
 | `schema/`        | `wire.fbs` (the wire format) and `tether.fbs` (attributes apps include) |
 | `golden/`        | Golden frames: the wire format as bytes, shared by both cores |
 | `cpp/tether/`    | The C++ core, an ESP-IDF component                           |
 | `cpp/tests/`     | Its host tests (GoogleTest)                                  |
 | `cpp/test_app/`  | An ESP-IDF app for integration tests against the Rust core   |
 
-Builds go to `target/` (Cargo) and `build/` (everything else).
+Builds go to `target/` (Cargo) and `build/` (everything else). Building
+`tether-gen` needs the submodule: clone with `--recursive`, or run
+`git submodule update --init`.
 
 ## Rust
 
@@ -68,8 +71,9 @@ TETHER_UART=/dev/cu.usbserial-XXXX cargo test -p tether-core --test qemu -- --ig
 
 Generated code is checked in, so none of this is needed to build or test; it
 is when a schema or `tether-gen` changes. It needs flatc 25.12.19 exactly: the
-same version as the `flatbuffers` crate and the headers pinned in
-`cpp/tether/third_party/flatbuffers`. And nightly rustfmt.
+same version as the `flatbuffers` crate, the headers pinned in
+`cpp/tether/third_party/flatbuffers` and the parser linked into `tether-gen`
+(which itself needs no flatc). And nightly rustfmt.
 
 ```sh
 make            # regenerates what's out of date
@@ -79,7 +83,8 @@ make            # regenerates what's out of date
 |-----------------------------------------------|-------------------------------|
 | `core/src/wire_generated.rs`                  | `schema/wire.fbs`             |
 | `cpp/tether/generated/tether/wire_generated.h`| `schema/wire.fbs`             |
-| `core/tests/generated/coprocessor_*.rs`       | `core/tests/coprocessor.fbs`, via flatc and `tether-gen` |
+| `core/tests/generated/coprocessor_generated.rs` | `core/tests/coprocessor.fbs`, via flatc |
+| `core/tests/generated/coprocessor_rpc.rs`     | `core/tests/coprocessor.fbs`, via `tether-gen` |
 
 ### Golden frames
 

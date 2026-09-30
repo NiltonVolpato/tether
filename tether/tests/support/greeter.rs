@@ -1,4 +1,4 @@
-//! What rpcgen is to generate for this schema, written by hand:
+//! What tether-gen is to generate for this schema, written by hand:
 //!
 //! ```fbs
 //! namespace Test;

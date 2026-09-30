@@ -111,29 +111,20 @@ Generalizing tether, beyond what t-encoder needs:
       WebSocket; forwards through the S3 to the co-processor with the generic proxy and the
       router catch-all
 - [ ] Computer-to-computer example (std, TCP), to illustrate the layering; not a gRPC competitor
-- [ ] tether-gen bundles flatc (via FFI): one tool from `.fbs` to generated code, for both
-      Rust and C++; then a test crate's `build.rs` replaces the Makefile's test-schema rules
-      and the `build/` directory. Findings so far (flatbuffers v25.12.19):
-  - Link flatbuffers' library APIs, which report errors, rather than flatc's command line:
-    `FlatCompiler`'s error callback must not return (`flatc_main.cpp` calls `exit(1)`), so a
-    bad schema would kill a build script.
-  - `.bfbs`: `Parser::Parse(source, include_paths, filename)` (false, with `parser.error_`),
-    then `Parser::Serialize()` leaves it in `parser.builder_`, as `flatc -b --schema` does
-    (`src/flatc.cpp`, `options.schema_binary`). `opts.binary_schema_builtins` and
-    `opts.binary_schema_comments` are `--bfbs-builtins` and `--bfbs-comments`.
-  - App types: `NewRustCodeGenerator()` / `NewCppCodeGenerator()` (`src/idl_gen_rust.h`,
+- [x] tether-gen links flatc's schema parser (`gen/src/flatc.cpp`, built by `build.rs` from
+      the `gen/flatbuffers` submodule at `v25.12.19`) and reads `.fbs` directly: no `.bfbs`
+- [ ] tether-gen also emits the flatbuffers types, for both Rust and C++: one tool from `.fbs`
+      to generated code; then a test crate's `build.rs` replaces the Makefile's test-schema
+      rules. Findings so far:
+  - `NewRustCodeGenerator()` / `NewCppCodeGenerator()` (`src/idl_gen_rust.h`,
     `src/idl_gen_cpp.h`) return a `CodeGenerator`; `GenerateCode(parser, path, filename)`
-    returns a `Status`.
+    returns a `Status`. Add their sources, and what they need, to `build.rs`.
   - No `include "tether.fbs"` at all: `Parser::known_attributes_` is public, and
     `known_attributes_["rpc_server"] = false` before parsing is what `attribute "rpc_server";`
     does (`src/idl_parser.cpp`). Check that a schema declaring them anyway still parses.
     Failing that, `SetLoadFileFunction` / `SetFileExistsFunction` (`util.h`) can serve an
     embedded `tether.fbs`.
-  - Build with the `cc` crate: the library sources (`idl_parser.cpp`, `idl_gen_text.cpp`,
-    `reflection.cpp`, `util.cpp`) plus the Rust and C++ generators and what they need, not
-    the other languages. Sources from a git submodule pinned to the `v25.12.19` tag, which
-    the published crate includes; flatc's version must match the `flatbuffers` crate and the
-    headers in `cpp/tether/third_party`.
+  - The golden tests' `flatc --json` could go through the linked `GenText` too.
   - Not `flatc-fork` (crates.io; builds flatc with flatbuffers' whole CMake build):
     `flatc_fork::flatc()` is a path in Cargo's build directory, which `cargo install`
     deletes, and we need an installable CLI for ESP-IDF builds. It also pins a commit past

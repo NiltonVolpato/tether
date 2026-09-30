@@ -20,11 +20,8 @@ $(GEN)/coprocessor_generated.rs: core/tests/coprocessor.fbs schema/tether.fbs
 	$(FLATC) --rust --gen-object-api --gen-all -I schema -o $(GEN)/ $<
 	$(RUSTFMT) $@
 
-$(BUILD)/%.bfbs: core/tests/%.fbs schema/tether.fbs
-	$(FLATC) -b --schema --bfbs-builtins --bfbs-comments -I schema -o $(BUILD)/ $<
-
-$(GEN)/coprocessor_rpc.rs: $(BUILD)/coprocessor.bfbs $(wildcard gen/src/*.rs)
-	cargo run --offline -q -p tether-gen -- $< --types crate::generated::coprocessor_generated > $@.tmp
+$(GEN)/coprocessor_rpc.rs: core/tests/coprocessor.fbs schema/tether.fbs $(wildcard gen/src/*)
+	cargo run --offline -q -p tether-gen -- $< -I schema --types crate::generated::coprocessor_generated > $@.tmp
 	mv $@.tmp $@
 	$(RUSTFMT) $@
 

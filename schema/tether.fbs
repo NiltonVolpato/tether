@@ -1,4 +1,4 @@
-// Attributes understood by rpcgen. Application schemas include this.
+// Attributes understood by tether-gen. Application schemas include this.
 
 /// On a `ubyte` enum: the services one server offers. Each value names an
 /// `rpc_service` in the same namespace, and is that service's wire id. Append
