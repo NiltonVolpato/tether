@@ -59,6 +59,8 @@ schema-agnostic layer below it.
 - [ ] tether-gen C++ output: server table, handler interfaces, typed sinks and replies
 - [x] Cross-language conformance: shared golden frames (`golden/frames.json`, decoded by flatc)
 - [ ] Cross-language conformance: C++ core built into the Rust simulation tests
+- [x] Integration test app (`cpp/test_app`): the C++ core on an ESP32 in QEMU, echoing frames
+      over UART1 to the Rust tests (`make -C cpp qemu-test`); grows with the C++ link and server
 
 ## Integration
 

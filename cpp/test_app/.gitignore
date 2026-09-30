@@ -1,0 +1,5 @@
+# What idf.py leaves in the project directory.
+/build/
+/dependencies.lock
+/sdkconfig
+/sdkconfig.old

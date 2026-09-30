@@ -12,3 +12,4 @@ tether = { version = "0.1.0", path = "../tether" }
 
 [dev-dependencies]
 serde_json = { version = "1", features = ["preserve_order"] }
+serialport = { version = "4", default-features = false }

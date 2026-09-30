@@ -1,4 +1,4 @@
-.PHONY: all build test clean fmt fmt-check tidy
+.PHONY: all build test qemu-test clean fmt fmt-check tidy
 
 LLVM_BIN := /opt/homebrew/opt/llvm@22/bin
 BUILD := ../build/cpp
@@ -9,7 +9,8 @@ FMT_STAMP := $(BUILD)/.fmt.stamp
 FMT_CHECK_STAMP := $(BUILD)/.fmt_check.stamp
 
 # Ours only: not tether/generated/ or tether/third_party/.
-FMT_SRCS := $(wildcard tether/include/tether/*.h tether/src/*.cpp tests/*.cpp tests/*.h)
+FMT_SRCS := $(wildcard tether/include/tether/*.h tether/src/*.cpp tests/*.cpp tests/*.h \
+                      test_app/main/*.cpp)
 SRCS := $(FMT_SRCS) $(wildcard tether/generated/tether/*.h) CMakeLists.txt \
         tether/CMakeLists.txt tests/CMakeLists.txt .clang-tidy
 
@@ -23,6 +24,11 @@ build: $(NINJA)
 
 test: build
 	ctest --test-dir $(BUILD) --output-on-failure --progress
+
+# The integration test: the component on an emulated ESP32, the Rust core on
+# the host. Needs ESP-IDF's environment (idf.py, QEMU).
+qemu-test:
+	test_app/qemu-test.sh
 
 tidy: $(TIDY_STAMP)
 
