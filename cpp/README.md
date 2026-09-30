@@ -32,14 +32,5 @@ that name. From git, the component manager fetches it into
 
 ## Developing
 
-On the host it's a plain CMake library, with GoogleTest tests:
-
-```sh
-make test       # configure, build and run the tests (in ../build/cpp)
-make fmt        # clang-format
-make tidy       # clang-tidy
-```
-
-`tether/generated/tether/wire_generated.h` comes from `../schema/wire.fbs`; the
-top-level Makefile regenerates it. `tether/third_party/flatbuffers` pins the
-flatbuffers runtime headers to the version of flatc that generates it.
+See [DEVELOPMENT.md](../DEVELOPMENT.md): `make test`, `fmt` and `tidy` here,
+and `make qemu-test` for the integration tests on an emulated ESP32.
