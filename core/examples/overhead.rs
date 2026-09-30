@@ -1,7 +1,7 @@
 //! Prints the wire size of typical frames.
 
-use rpc_core::frame::{self, Header};
-use rpc_core::proto::{Credits, CreditsArgs, Grant, Kind, Status};
+use tether_core::frame::{self, Header};
+use tether_core::wire::{Credits, CreditsArgs, Grant, Kind, Status};
 
 fn credits(n: u32) -> Vec<u8> {
     let mut fbb = flatbuffers::FlatBufferBuilder::new();

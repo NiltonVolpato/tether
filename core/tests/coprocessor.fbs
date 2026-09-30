@@ -1,7 +1,7 @@
 // The current coprocessor.fbs restated as services. The S3 is the only client;
 // everything the co-processor pushes arrives on channels the S3 opened.
 
-include "rpc_attributes.fbs";
+include "tether.fbs";
 
 namespace CoprocessorProto;
 

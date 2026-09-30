@@ -1,9 +1,0 @@
-[package]
-name = "rpcgen"
-version = "0.1.0"
-edition = "2024"
-publish = false
-
-[dependencies]
-rpc = { version = "0.1.0", path = "../rpc" }
-flatbuffers-reflection = "0.1"

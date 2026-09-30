@@ -1,10 +1,10 @@
-#include "rpc/crc32.h"
+#include "tether/crc32.h"
 
 #include <gtest/gtest.h>
 
 #include <string_view>
 
-namespace rpc {
+namespace tether {
 namespace {
 
 constexpr uint32_t crc_of(std::string_view s) {
@@ -31,4 +31,4 @@ TEST(Crc32, IncrementalMatchesOneShot) {
 }
 
 }  // namespace
-}  // namespace rpc
+}  // namespace tether

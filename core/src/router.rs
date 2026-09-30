@@ -1,10 +1,10 @@
-//! Routes server events to the `rpc::Service`s that own them.
+//! Routes server events to the `tether::Service`s that own them.
 
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 
-use rpc::{CallId, MethodId, RawReply, RawSink, ServerTable, Service, Status, lookup};
+use tether::{CallId, MethodId, RawReply, RawSink, ServerTable, Service, Status, lookup};
 
 use crate::server::{Server, ServerEvent, ServerReply, ServerSink, SharedServer};
 

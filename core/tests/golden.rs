@@ -8,18 +8,18 @@
 //!
 //! The tests fail when the encoder's output changes. If the change is meant,
 //! regenerate (this needs flatc) with
-//! `UPDATE_GOLDEN=1 cargo test -p rpc-core --test golden` and commit the file.
+//! `UPDATE_GOLDEN=1 cargo test -p tether-core --test golden` and commit the file.
 
 use std::path::Path;
 use std::process::Command;
 use std::sync::OnceLock;
 
-use rpc_core::frame::{self, FrameError, Header};
-use rpc_core::proto::{self, Credits, CreditsArgs, Grant, Hello, HelloArgs, Kind, Status};
+use tether_core::frame::{self, FrameError, Header};
+use tether_core::wire::{self, Credits, CreditsArgs, Grant, Hello, HelloArgs, Kind, Status};
 use serde_json::{Value, json};
 
 const PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../golden/frames.json");
-const SCHEMA: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../schema/rpc.fbs");
+const SCHEMA: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../schema/wire.fbs");
 
 enum Expect {
     Frame {
@@ -228,8 +228,8 @@ fn unhex(hex: &str) -> Vec<u8> {
 /// The root type of a framework payload, which flatc can decode.
 fn payload_type(kind: Kind) -> Option<&'static str> {
     match kind {
-        Kind::Hello => Some("Rpc.Hello"),
-        Kind::Credit => Some("Rpc.Credits"),
+        Kind::Hello => Some("tether.wire.Hello"),
+        Kind::Credit => Some("tether.wire.Credits"),
         _ => None,
     }
 }
@@ -275,7 +275,7 @@ fn golden(case: &Case) -> Value {
     json!({
         "name": name,
         "wire": hex(&case.wire),
-        "header": flatc_json(&format!("{name}.header"), &body[4..header_end], "Rpc.Header", true),
+        "header": flatc_json(&format!("{name}.header"), &body[4..header_end], "tether.wire.Header", true),
         "payload": match payload_type(header.kind) {
             Some(root) => flatc_json(&format!("{name}.payload"), payload, root, false),
             None => Value::String(hex(payload)),
@@ -396,7 +396,7 @@ fn golden_frames_decode() {
 #[test]
 fn golden_frames_cover_every_kind_and_error() {
     let cases = cases();
-    for kind in proto::Kind::ENUM_VALUES {
+    for kind in wire::Kind::ENUM_VALUES {
         assert!(
             cases
                 .iter()

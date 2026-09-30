@@ -9,22 +9,22 @@
 #include <string>
 #include <vector>
 
-#include "rpc/frame.h"
 #include "support.h"
+#include "tether/frame.h"
 
-namespace rpc {
+namespace tether {
 namespace {
 
 using ::nlohmann::json;
-using ::rpc::testing::AlignedBuffer;
-using ::rpc::testing::hex;
-using ::rpc::testing::unhex;
 using ::testing::ElementsAreArray;
 using ::testing::Eq;
 using ::testing::SizeIs;
+using ::tether::testing::AlignedBuffer;
+using ::tether::testing::hex;
+using ::tether::testing::unhex;
 
 std::vector<json> golden_frames() {
-  std::ifstream in(RPC_GOLDEN_FRAMES);
+  std::ifstream in(TETHER_GOLDEN_FRAMES);
   return json::parse(in).get<std::vector<json>>();
 }
 
@@ -55,13 +55,13 @@ std::string error_name(FrameError e) {
 // A header as flatc prints it.
 json header_json(const Header& h) {
   return {
-      {"kind", ::Rpc::EnumNameKind(h.kind)},
+      {"kind", wire::EnumNameKind(h.kind)},
       {"seq", h.seq},
       {"call_id", h.call_id},
       {"service", h.service},
       {"method", h.method},
       {"credit", h.credit},
-      {"status", ::Common::EnumNameStatus(h.status)},
+      {"status", wire::EnumNameStatus(h.status)},
   };
 }
 
@@ -71,20 +71,20 @@ json payload_json(Kind kind, std::span<const std::byte> payload) {
   flatbuffers::Verifier verifier(data, payload.size());
   switch (kind) {
     case Kind::Hello: {
-      if (!verifier.VerifyBuffer<::Rpc::Hello>()) {
+      if (!verifier.VerifyBuffer<wire::Hello>()) {
         return "unverifiable Hello";
       }
-      const auto* hello = flatbuffers::GetRoot<::Rpc::Hello>(data);
+      const auto* hello = flatbuffers::GetRoot<wire::Hello>(data);
       return {{"boot_id", hello->boot_id()},
               {"peer_boot_id", hello->peer_boot_id()}};
     }
     case Kind::Credit: {
-      if (!verifier.VerifyBuffer<::Rpc::Credits>()) {
+      if (!verifier.VerifyBuffer<wire::Credits>()) {
         return "unverifiable Credits";
       }
       json grants = json::array();
       for (const auto* g :
-           *flatbuffers::GetRoot<::Rpc::Credits>(data)->grants()) {
+           *flatbuffers::GetRoot<wire::Credits>(data)->grants()) {
         grants.push_back({{"call_id", g->call_id()}, {"credit", g->credit()}});
       }
       return {{"grants", grants}};
@@ -176,4 +176,4 @@ INSTANTIATE_TEST_SUITE_P(Golden, ValidGoldenFrame,
                          frame_name);
 
 }  // namespace
-}  // namespace rpc
+}  // namespace tether

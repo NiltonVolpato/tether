@@ -8,7 +8,7 @@
 #include <string_view>
 #include <vector>
 
-namespace rpc::testing {
+namespace tether::testing {
 
 // A receive buffer: 8-aligned, as the core requires.
 class AlignedBuffer {
@@ -45,4 +45,4 @@ inline std::string hex(std::span<const std::byte> bytes) {
   return out;
 }
 
-}  // namespace rpc::testing
+}  // namespace tether::testing

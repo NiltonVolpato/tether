@@ -9,15 +9,15 @@ FetchContent_Declare(
   FIND_PACKAGE_ARGS)
 FetchContent_MakeAvailable(googletest nlohmann_json)
 
-add_executable(rpc_tests cobs_test.cpp crc32_test.cpp frame_test.cpp
+add_executable(tether_tests cobs_test.cpp crc32_test.cpp frame_test.cpp
                          golden_test.cpp)
-target_link_libraries(rpc_tests PRIVATE rpc GTest::gmock_main
+target_link_libraries(tether_tests PRIVATE tether GTest::gmock_main
                                         nlohmann_json::nlohmann_json)
-target_compile_options(rpc_tests PRIVATE -Wall -Wextra -Werror)
+target_compile_options(tether_tests PRIVATE -Wall -Wextra -Werror)
 target_compile_definitions(
-  rpc_tests
+  tether_tests
   PRIVATE
-    RPC_GOLDEN_FRAMES="${CMAKE_CURRENT_SOURCE_DIR}/../../golden/frames.json")
+    TETHER_GOLDEN_FRAMES="${CMAKE_CURRENT_SOURCE_DIR}/../../golden/frames.json")
 
 include(GoogleTest)
-gtest_discover_tests(rpc_tests)
+gtest_discover_tests(tether_tests)

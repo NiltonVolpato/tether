@@ -1,4 +1,4 @@
-#include "rpc/cobs.h"
+#include "tether/cobs.h"
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
@@ -7,7 +7,7 @@
 #include <cstdint>
 #include <vector>
 
-namespace rpc {
+namespace tether {
 namespace {
 
 using ::testing::ElementsAreArray;
@@ -110,4 +110,4 @@ TEST(Cobs, ReportsOverflow) {
 }
 
 }  // namespace
-}  // namespace rpc
+}  // namespace tether

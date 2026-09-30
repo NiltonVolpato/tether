@@ -6,11 +6,11 @@ use alloc::rc::Rc;
 use alloc::vec::Vec;
 use core::cell::RefCell;
 
-use rpc::{CallId, MethodId, RawReply, RawSink, ServerTypes, Status, StreamError};
+use tether::{CallId, MethodId, RawReply, RawSink, ServerTypes, Status, StreamError};
 
 use crate::frame::{Frame, Header};
 use crate::link::{Link, LinkConfig, LinkState, LinkStats};
-use crate::proto::{Credits, Kind};
+use crate::wire::{Credits, Kind};
 use crate::wire_status;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -1,4 +1,4 @@
-#include "rpc/frame.h"
+#include "tether/frame.h"
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
@@ -8,13 +8,13 @@
 
 #include "support.h"
 
-namespace rpc {
+namespace tether {
 namespace {
 
-using ::rpc::testing::AlignedBuffer;
 using ::testing::ElementsAreArray;
 using ::testing::Eq;
 using ::testing::Le;
+using ::tether::testing::AlignedBuffer;
 
 constexpr Header kMaxHeader{
     .kind = Kind::Item,
@@ -103,4 +103,4 @@ TEST(Frame, DeframerSkipsEmptyFrames) {
 }
 
 }  // namespace
-}  // namespace rpc
+}  // namespace tether

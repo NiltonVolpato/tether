@@ -2,12 +2,12 @@
 
 use alloc::vec::Vec;
 
-use crate::proto::{Header as FbHeader, HeaderArgs, Kind, Status};
+use crate::wire::{Header as FbHeader, HeaderArgs, Kind, Status};
 
 const CRC_LEN: usize = 4;
 const PAYLOAD_ALIGN: usize = 8;
 
-/// Owned copy of the fields of a `Rpc.Header`.
+/// Owned copy of the fields of a `tether.wire.Header`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Header {
     pub kind: Kind,

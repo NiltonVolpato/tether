@@ -8,12 +8,12 @@ use alloc::vec::Vec;
 use core::cell::RefCell;
 use core::task::{Context, Poll, Waker};
 
-use rpc::{MethodId, RawCall, RawChannel, Status, Transport};
+use tether::{MethodId, RawCall, RawChannel, Status, Transport};
 
 use crate::frame::{Frame, Header};
 use crate::link::{Link, LinkConfig, LinkState, LinkStats};
-use crate::proto::{Credits, CreditsArgs, Grant, Kind};
-use crate::rpc_status;
+use crate::wire::{Credits, CreditsArgs, Grant, Kind};
+use crate::tether_status;
 
 #[derive(Default)]
 struct Slot {
@@ -316,7 +316,7 @@ impl Client {
                 slot.items.push_back(frame.payload);
             }
             _ => {
-                let result = rpc_status(h.status);
+                let result = tether_status(h.status);
                 if result.is_ok() && h.kind == Kind::Response {
                     slot.items.push_back(frame.payload);
                 }

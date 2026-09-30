@@ -8,12 +8,12 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::task::{Context, Poll, Wake, Waker};
 
 use common::{ServerApp, Sim};
-use rpc::{MethodId, RawChannel, Status, StreamError};
-use rpc_core::client::{Channel, Client};
-use rpc_core::frame::{self, Deframer, FrameError, Header};
-use rpc_core::link::{LinkConfig, LinkState};
-use rpc_core::proto::{self, Kind};
-use rpc_core::server::{Server, ServerEvent, SharedServer};
+use tether::{MethodId, RawChannel, Status, StreamError};
+use tether_core::client::{Channel, Client};
+use tether_core::frame::{self, Deframer, FrameError, Header};
+use tether_core::link::{LinkConfig, LinkState};
+use tether_core::wire::{self, Kind};
+use tether_core::server::{Server, ServerEvent, SharedServer};
 
 /// Unary: responds with the payload reversed.
 const ECHO: MethodId = MethodId::new(0, 0);
@@ -107,7 +107,7 @@ fn frame_roundtrip_and_alignment() {
         service: u8::MAX,
         method: u8::MAX,
         credit: u16::MAX,
-        status: proto::Status::DATA_LOSS,
+        status: wire::Status::DATA_LOSS,
     };
     for len in [0, 1, 7, 8, 9, 511] {
         let payload: Vec<u8> = (0..len).map(|i| i as u8 | 1).collect();
@@ -333,7 +333,7 @@ fn freed_slots_of_many_channels_go_out_in_one_credit_frame() {
         .filter(|f| f.header.kind == Kind::Credit)
         .collect();
     assert_eq!(credits.len(), 1);
-    let grants: Vec<_> = (flatbuffers::root::<proto::Credits>(&credits[0].payload).unwrap())
+    let grants: Vec<_> = (flatbuffers::root::<wire::Credits>(&credits[0].payload).unwrap())
         .grants()
         .unwrap()
         .iter()

@@ -17,13 +17,13 @@ Rust on the S3 (client); C++ on the co-processor (server).
 - [x] Cancel on drop: dropping a `Channel` or `Call` cancels it on the server
 - [x] Stream limit returns `RESOURCE_EXHAUSTED`
 - [x] Simulated lossy link: drops, bit flips, random read sizes, many seeds
-- [x] rpcgen reads `.bfbs` via flatbuffers-reflection
-- [x] rpcgen: typed Rust clients, handler traits and services
+- [x] tether-gen reads `.bfbs` via flatbuffers-reflection
+- [x] tether-gen: typed Rust clients, handler traits and services
 - [x] Wire ids from `rpc_server` enums and method order; `deprecated` tombstones
 - [x] Router: direct-indexed dispatch; automatic `UNIMPLEMENTED` and `INVALID_ARGUMENT`
 - [x] Framework schemas kept apart from the test application's schema
 
-## API (`rpc` crate: the generic middle layer; traits and data objects only)
+## API (`tether` crate: the generic middle layer; traits and data objects only)
 
 Generated code is the thin typed layer on top of it, and the core the
 schema-agnostic layer below it.
@@ -35,12 +35,13 @@ schema-agnostic layer below it.
 - [x] A proxy using only the generic layer forwards calls, channels, credit and cancellation (test)
 - [ ] Router catch-all, so a proxy can serve services it doesn't know
 - [x] Rename `api` to `rpc`; the core becomes `rpc-core`, in a virtual workspace
-- [x] rpcgen generates code that depends only on `rpc`, as in the `Greeter` spec
+- [x] Working name `tether`: crates `tether`, `tether-core`, `tether-gen`; C++ `namespace tether`
+- [x] tether-gen generates code that depends only on `tether`, as in the `Greeter` spec
 - [x] The core implements `Transport` and `ServerTypes`; its router dispatches to `api::Service`
 - [x] The core maps wire status codes to `api::Status`
-- [ ] `rpc-testing` crate: ship the in-process `Loopback` fake to users
+- [ ] `tether-testing` crate: ship the in-process `Loopback` fake to users
 
-## Core (`rpc-core` crate)
+## Core (`tether-core` crate)
 
 - [ ] Choose the interior mutability behind `SharedClient` and `SharedServer` (a `RefCell` for now, i.e. one executor; depends on the S3 task/executor layout)
 - [x] Liveness: ping and a retransmit limit, so a dead peer is detected (replaces Heartbeat)
@@ -55,7 +56,7 @@ schema-agnostic layer below it.
 ## C++ (co-processor)
 
 - [ ] C++ core: framing (done: COBS, CRC32, header, Deframer; passes the goldens), link, server, router
-- [ ] rpcgen C++ output: server table, handler interfaces, typed sinks and replies
+- [ ] tether-gen C++ output: server table, handler interfaces, typed sinks and replies
 - [x] Cross-language conformance: shared golden frames (`golden/frames.json`, decoded by flatc)
 - [ ] Cross-language conformance: C++ core built into the Rust simulation tests
 
@@ -77,8 +78,8 @@ schema-agnostic layer below it.
 ## Later
 
 - [ ] Move the framework to its own repository
-- [ ] rpcgen bundles flatc (via FFI): one tool from `.fbs` to generated code, with
-      `rpc_attributes.fbs` on the include path automatically; then a test crate's
+- [ ] tether-gen bundles flatc (via FFI): one tool from `.fbs` to generated code, with
+      `tether.fbs` on the include path automatically; then a test crate's
       `build.rs` replaces the Makefile's test-schema rules and the `build/` directory
 
 ## Not planned

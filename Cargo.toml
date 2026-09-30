@@ -1,3 +1,3 @@
 [workspace]
-members = ["core", "rpc", "rpcgen"]
+members = ["core", "gen", "tether"]
 resolver = "3"

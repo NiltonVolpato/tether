@@ -4,10 +4,10 @@
 
 use std::collections::VecDeque;
 
-use rpc_core::client::{Client, SharedClient};
-use rpc_core::link::{LinkConfig, LinkState};
-use rpc_core::router::Router;
-use rpc_core::server::{Server, ServerEvent, SharedServer};
+use tether_core::client::{Client, SharedClient};
+use tether_core::link::{LinkConfig, LinkState};
+use tether_core::router::Router;
+use tether_core::server::{Server, ServerEvent, SharedServer};
 
 pub struct Rng(pub u64);
 

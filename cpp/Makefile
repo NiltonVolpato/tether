@@ -11,14 +11,14 @@ TIDY_STAMP := $(BUILD)/.tidy.stamp
 FMT_STAMP := $(BUILD)/.fmt.stamp
 FMT_CHECK_STAMP := $(BUILD)/.fmt_check.stamp
 
-# Ours only: not generated/ or third_party/.
-FMT_SRCS := $(wildcard include/rpc/*.h src/*.cpp tests/*.cpp tests/*.h)
-SRCS := $(FMT_SRCS) $(wildcard generated/rpc/*.h) CMakeLists.txt \
-        tests/CMakeLists.txt .clang-tidy
+# Ours only: not tether/generated/ or tether/third_party/.
+FMT_SRCS := $(wildcard tether/include/tether/*.h tether/src/*.cpp tests/*.cpp tests/*.h)
+SRCS := $(FMT_SRCS) $(wildcard tether/generated/tether/*.h) CMakeLists.txt \
+        tether/CMakeLists.txt tests/CMakeLists.txt .clang-tidy
 
 all: test
 
-$(NINJA): CMakeLists.txt tests/CMakeLists.txt
+$(NINJA): CMakeLists.txt tether/CMakeLists.txt tests/CMakeLists.txt
 	cmake -S . -B $(BUILD) -G Ninja -DCMAKE_BUILD_TYPE=Debug
 
 build: $(NINJA)
@@ -36,8 +36,8 @@ $(TIDY_STAMP): $(SRCS) | $(NINJA)
 		-p $(BUILD) \
 		-quiet \
 		-hide-progress \
-		-source-filter '.*/cpp/(src|tests)/.*' \
-		-header-filter '.*/cpp/(include|src|tests)/.*\.h$$' \
+		-source-filter '.*/cpp/(tether/src|tests)/.*' \
+		-header-filter '.*/cpp/(tether/include|tether/src|tests)/.*\.h$$' \
 		$(TIDY_SYSROOT)
 	@touch $(TIDY_STAMP)
 

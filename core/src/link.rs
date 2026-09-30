@@ -12,7 +12,7 @@ use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 
 use crate::frame::{self, Deframer, Frame, FrameError, Header};
-use crate::proto::{Hello, HelloArgs, Kind};
+use crate::wire::{Hello, HelloArgs, Kind};
 
 #[derive(Clone, Copy, Debug)]
 pub struct LinkConfig {

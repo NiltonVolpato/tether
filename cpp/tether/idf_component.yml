@@ -1,0 +1,4 @@
+version: "0.1.0"
+description: "tether: schema-driven RPC over a byte link, such as a UART. The C++ core (server side)."
+dependencies:
+  idf: ">=6.0"

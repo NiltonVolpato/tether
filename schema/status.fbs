@@ -1,5 +1,5 @@
 
-namespace Common;
+namespace tether.wire;
 
 enum Status : byte {
     // Not an error; returned on success.

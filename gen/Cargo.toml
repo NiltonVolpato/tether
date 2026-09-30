@@ -1,0 +1,9 @@
+[package]
+name = "tether-gen"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+tether = { version = "0.1.0", path = "../tether" }
+flatbuffers-reflection = "0.1"

@@ -1,6 +1,6 @@
 # Golden frames
 
-`frames.json` pins down the wire format in `schema/rpc.fbs` as bytes, for every
+`frames.json` pins down the wire format in `schema/wire.fbs` as bytes, for every
 implementation of the core to test its decoder against. It's written by
 `core/tests/golden.rs`; don't edit it by hand.
 
@@ -11,11 +11,11 @@ It's an array of frames. Every frame has:
 
 A valid frame also has:
 
-- `header`: the `Rpc.Header`, as flatc prints it
+- `header`: the `tether.wire.Header`, as flatc prints it
   (`flatc --json --strict-json --defaults-json --raw-binary --size-prefixed`).
-- `payload`: for the framework's payloads (`Hello`, `Credit`), the `Rpc.Hello`
-  or `Rpc.Credits` as flatc prints it; otherwise the payload's bytes in hex
-  (`""` when empty).
+- `payload`: for the framework's payloads (`Hello`, `Credit`), the
+  `tether.wire.Hello` or `tether.wire.Credits` as flatc prints it; otherwise the
+  payload's bytes in hex (`""` when empty).
 
 The expected values come from flatc, the reference flatbuffers implementation,
 so they don't depend on the Rust core under test.
@@ -45,7 +45,7 @@ The Rust tests fail when the encoder's output no longer matches `frames.json`.
 If the wire format change is meant, regenerate (this needs flatc on the PATH):
 
 ```sh
-UPDATE_GOLDEN=1 cargo test -p rpc-core --test golden
+UPDATE_GOLDEN=1 cargo test -p tether-core --test golden
 ```
 
 and update the other implementations to match.

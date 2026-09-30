@@ -1,4 +1,4 @@
-//! Sans-IO implementation of the `rpc` traits for the S3 <-> co-processor
+//! Sans-IO implementation of the `tether` traits for the S3 <-> co-processor
 //! link: no UART, no executor, no clock. Callers feed received bytes in,
 //! pull bytes to transmit out, and pass the current time in milliseconds.
 //!
@@ -15,24 +15,24 @@ pub mod link;
 pub mod router;
 pub mod server;
 
-pub use rpc;
+pub use tether;
 
 #[allow(clippy::all, unused_imports, dead_code, non_camel_case_types)]
-mod rpc_generated;
+mod wire_generated;
 
-pub mod proto {
-    pub use crate::rpc_generated::common::Status;
-    pub use crate::rpc_generated::rpc::*;
+/// The wire format's types, generated from `schema/wire.fbs`.
+pub mod wire {
+    pub use crate::wire_generated::tether::wire::*;
 }
 
 /// The header's status for a result.
-fn wire_status(result: Result<(), rpc::Status>) -> proto::Status {
-    proto::Status(match result {
+fn wire_status(result: Result<(), tether::Status>) -> wire::Status {
+    wire::Status(match result {
         Ok(()) => 0,
         Err(status) => status.code() as i8,
     })
 }
 
-fn rpc_status(status: proto::Status) -> Result<(), rpc::Status> {
-    rpc::Status::from_code(status.0 as u8)
+fn tether_status(status: wire::Status) -> Result<(), tether::Status> {
+    tether::Status::from_code(status.0 as u8)
 }
