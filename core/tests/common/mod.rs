@@ -38,6 +38,8 @@ pub struct Pipe {
     pub drop_first: usize,
     /// Drops everything: a disconnected wire or a hung peer.
     pub cut: bool,
+    /// When set, collects every frame written to the pipe.
+    pub tap: Option<Vec<Vec<u8>>>,
     in_flight: VecDeque<(u64, Vec<u8>)>,
 }
 
@@ -49,11 +51,15 @@ impl Pipe {
             corrupt_pct,
             drop_first: 0,
             cut: false,
+            tap: None,
             in_flight: VecDeque::new(),
         }
     }
 
     pub fn push(&mut self, now: u64, mut bytes: Vec<u8>) {
+        if let Some(tap) = &mut self.tap {
+            tap.push(bytes.clone());
+        }
         if self.cut {
             return;
         }

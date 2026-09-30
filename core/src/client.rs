@@ -1,5 +1,6 @@
 //! The client (S3) side. Calls return handles the app owns; the client keeps
-//! only `Weak` references, so dropping a handle cancels the call.
+//! only `Weak` references. Each poll it scans them: a dropped handle cancels
+//! its call, and slots the app freed go back to the server as credit.
 
 use alloc::collections::{BTreeMap, VecDeque};
 use alloc::rc::{Rc, Weak};
@@ -11,17 +12,8 @@ use rpc::{MethodId, RawCall, RawChannel, Status, Transport};
 
 use crate::frame::{Frame, Header};
 use crate::link::{Link, LinkConfig, LinkState, LinkStats};
-use crate::proto::Kind;
+use crate::proto::{Credits, CreditsArgs, Grant, Kind};
 use crate::rpc_status;
-
-/// What app handles ask the client to send on their behalf. They can't reach
-/// the client itself: it may be borrowed when they're dropped.
-enum Control {
-    Credit(u32),
-    Cancel(u32),
-}
-
-type Outbox = Rc<RefCell<Vec<Control>>>;
 
 #[derive(Default)]
 struct Slot {
@@ -40,17 +32,13 @@ fn wake(slot: &mut Slot) {
 
 /// Receiving end of a server-streaming call. Dropping it cancels the call.
 pub struct Channel {
-    call_id: u32,
     slot: SlotRef,
-    outbox: Outbox,
 }
 
 impl Channel {
     /// An item if one is waiting.
     pub fn try_recv(&self) -> Option<Vec<u8>> {
-        let item = self.slot.borrow_mut().items.pop_front()?;
-        self.outbox.borrow_mut().push(Control::Credit(self.call_id));
-        Some(item)
+        self.slot.borrow_mut().items.pop_front()
     }
 }
 
@@ -75,19 +63,9 @@ impl RawChannel for Channel {
     }
 }
 
-impl Drop for Channel {
-    fn drop(&mut self) {
-        if self.slot.borrow().end.is_none() {
-            self.outbox.borrow_mut().push(Control::Cancel(self.call_id));
-        }
-    }
-}
-
 /// A pending unary call. Dropping it before the response cancels the call.
 pub struct Call {
-    call_id: u32,
     slot: SlotRef,
-    outbox: Outbox,
 }
 
 impl Call {
@@ -112,14 +90,6 @@ impl RawCall for Call {
     }
 }
 
-impl Drop for Call {
-    fn drop(&mut self) {
-        if self.slot.borrow().end.is_none() {
-            self.outbox.borrow_mut().push(Control::Cancel(self.call_id));
-        }
-    }
-}
-
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ClientStats {
     pub calls: u32,
@@ -135,6 +105,9 @@ struct Entry {
     slot: Weak<RefCell<Slot>>,
     streaming: bool,
     capacity: usize,
+    /// Credit the server holds: granted, and not used by an item yet. Buffered
+    /// items plus this never exceed `capacity`.
+    held: usize,
     deadline: Option<u64>,
 }
 
@@ -142,7 +115,6 @@ pub struct Client {
     link: Link,
     calls: BTreeMap<u32, Entry>,
     next_call_id: u32,
-    outbox: Outbox,
     stats: ClientStats,
     now: u64,
 }
@@ -153,7 +125,6 @@ impl Client {
             link: Link::new(boot_id, cfg),
             calls: BTreeMap::new(),
             next_call_id: 1,
-            outbox: Rc::default(),
             stats: ClientStats::default(),
             now: 0,
         }
@@ -171,8 +142,8 @@ impl Client {
         self.stats
     }
 
-    /// Calls the server has not finished yet, including dropped ones whose
-    /// Cancel hasn't gone out.
+    /// Calls the server has not finished yet, including dropped ones not
+    /// scanned yet.
     pub fn open_calls(&self) -> usize {
         self.calls.len()
     }
@@ -181,15 +152,13 @@ impl Client {
     /// `timeout_ms`, counted from the last `poll_transmit` time.
     pub fn call(&mut self, method: MethodId, payload: Vec<u8>, timeout_ms: u64) -> Call {
         let deadline = Some(self.now + timeout_ms);
-        let (call_id, slot) = self.start(Kind::Request, method, payload, 1, deadline);
-        Call { call_id, slot, outbox: self.outbox.clone() }
+        Call { slot: self.start(Kind::Request, method, payload, 1, deadline) }
     }
 
     /// Opens a server-streaming channel buffering up to `capacity` items.
     pub fn open(&mut self, method: MethodId, payload: Vec<u8>, capacity: u16) -> Channel {
         assert!(capacity > 0);
-        let (call_id, slot) = self.start(Kind::Open, method, payload, capacity, None);
-        Channel { call_id, slot, outbox: self.outbox.clone() }
+        Channel { slot: self.start(Kind::Open, method, payload, capacity, None) }
     }
 
     fn start(
@@ -199,13 +168,13 @@ impl Client {
         payload: Vec<u8>,
         credit: u16,
         deadline: Option<u64>,
-    ) -> (u32, SlotRef) {
+    ) -> SlotRef {
         let call_id = self.next_call_id;
         self.next_call_id += 1;
         let slot = SlotRef::default();
         if self.link.state().is_terminal() {
             slot.borrow_mut().end = Some(Err(Status::Unavailable));
-            return (call_id, slot);
+            return slot;
         }
         // Registered before the request is queued, so there's always an entry
         // for anything the server sends back.
@@ -215,13 +184,14 @@ impl Client {
                 slot: Rc::downgrade(&slot),
                 streaming: kind == Kind::Open,
                 capacity: credit.into(),
+                held: credit.into(),
                 deadline,
             },
         );
         let header = Header { call_id, service, method, credit, ..Header::new(kind) };
         self.link.send(header, payload);
         self.stats.calls += 1;
-        (call_id, slot)
+        slot
     }
 
     pub fn receive(&mut self, bytes: &[u8]) {
@@ -234,7 +204,7 @@ impl Client {
 
     pub fn poll_transmit(&mut self, now: u64) -> Option<Vec<u8>> {
         self.now = now;
-        self.flush_outbox();
+        self.scan();
         self.expire_deadlines(now);
         let wire = self.link.poll_transmit(now);
         self.check_link();
@@ -255,23 +225,34 @@ impl Client {
         }
     }
 
-    fn flush_outbox(&mut self) {
-        let controls = core::mem::take(&mut *self.outbox.borrow_mut());
-        let mut credits: BTreeMap<u32, u16> = BTreeMap::new();
-        for c in controls {
-            match c {
-                Control::Credit(id) => *credits.entry(id).or_default() += 1,
-                Control::Cancel(id) => {
-                    credits.remove(&id);
-                    self.cancel(id);
-                }
+    /// Cancels calls whose handles were dropped, and grants every channel the
+    /// slots its app freed, all in one Credit frame.
+    fn scan(&mut self) {
+        let mut dropped = Vec::new();
+        let mut grants = Vec::new();
+        for (&call_id, entry) in &mut self.calls {
+            let Some(slot) = entry.slot.upgrade() else {
+                dropped.push(call_id);
+                continue;
+            };
+            if !entry.streaming {
+                continue;
+            }
+            let free = entry.capacity - slot.borrow().items.len() - entry.held;
+            if free > 0 {
+                entry.held += free;
+                grants.push(Grant::new(call_id, free as u16));
             }
         }
-        for (call_id, credit) in credits {
-            if self.calls.contains_key(&call_id) {
-                self.link
-                    .send(Header { call_id, credit, ..Header::new(Kind::Credit) }, Vec::new());
-            }
+        for call_id in dropped {
+            self.cancel(call_id);
+        }
+        if !grants.is_empty() {
+            let mut fbb = flatbuffers::FlatBufferBuilder::new();
+            let grants = fbb.create_vector(&grants);
+            let credits = Credits::create(&mut fbb, &CreditsArgs { grants: Some(grants) });
+            fbb.finish(credits, None);
+            self.link.send(Header::new(Kind::Credit), fbb.finished_data().to_vec());
         }
     }
 
@@ -307,7 +288,7 @@ impl Client {
             Kind::Item | Kind::End => e.streaming,
             _ => false,
         };
-        let Some(entry) = self.calls.get(&h.call_id).filter(|e| expects(e)) else {
+        let Some(entry) = self.calls.get_mut(&h.call_id).filter(|e| expects(e)) else {
             // Unknown or already cancelled: make sure the server stops.
             if h.kind == Kind::Item {
                 self.stats.stale_items += 1;
@@ -317,8 +298,8 @@ impl Client {
             return;
         };
         let Some(slot) = entry.slot.upgrade() else {
-            // Dropped, and its Cancel is still in the outbox: send it now, or
-            // not at all if the server just finished the call anyway.
+            // Dropped, and not scanned yet: cancel it now, or not at all if
+            // the server just finished the call anyway.
             if h.kind == Kind::Item {
                 self.stats.stale_items += 1;
                 self.cancel(h.call_id);
@@ -327,11 +308,13 @@ impl Client {
             }
             return;
         };
-        let capacity = entry.capacity;
         let mut slot = slot.borrow_mut();
         match h.kind {
-            Kind::Item if slot.items.len() >= capacity => self.stats.overruns += 1,
-            Kind::Item => slot.items.push_back(frame.payload),
+            Kind::Item if entry.held == 0 => self.stats.overruns += 1,
+            Kind::Item => {
+                entry.held -= 1;
+                slot.items.push_back(frame.payload);
+            }
             _ => {
                 let result = rpc_status(h.status);
                 if result.is_ok() && h.kind == Kind::Response {

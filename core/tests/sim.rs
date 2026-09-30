@@ -297,7 +297,53 @@ fn unary_calls_run_exactly_once_over_lossy_link() {
     }
 }
 
+#[test]
+fn dropping_call_cancels_it() {
+    let mut sim = clean();
+    let call = sim.client.borrow_mut().call(BLACK_HOLE, vec![], 60_000);
+    sim.run_until(1_000, |s| s.app.unary_calls == 1);
+    drop(call);
+    sim.run_until(1_000, |s| s.app.cancelled.len() == 1);
+    assert_eq!(sim.client.borrow().open_calls(), 0);
+    assert_eq!(sim.server.borrow().open_calls(), 0);
+}
+
 // --- Channels ---
+
+#[test]
+fn freed_slots_of_many_channels_go_out_in_one_credit_frame() {
+    let mut sim = clean();
+    let channels: Vec<_> =
+        (0..3).map(|_| sim.client.borrow_mut().open(SUBSCRIBE, vec![], 1)).collect();
+    sim.run_until(1_000, |s| s.app.subscriptions.len() == 3);
+    let subscriptions = sim.app.subscriptions.clone();
+    for &call_id in &subscriptions {
+        sim.server.borrow_mut().send(call_id, vec![1]).unwrap();
+    }
+    sim.run(100);
+
+    sim.c2s.tap = Some(Vec::new());
+    for ch in &channels {
+        assert_eq!(ch.try_recv(), Some(vec![1]));
+    }
+    sim.run(100);
+    let mut deframer = Deframer::new(1024);
+    let credits: Vec<_> = (sim.c2s.tap.take().unwrap().concat().into_iter())
+        .filter_map(|b| deframer.push(b)?.ok())
+        .filter(|f| f.header.kind == Kind::Credit)
+        .collect();
+    assert_eq!(credits.len(), 1);
+    let grants: Vec<_> = (flatbuffers::root::<proto::Credits>(&credits[0].payload).unwrap())
+        .grants()
+        .unwrap()
+        .iter()
+        .map(|g| (g.call_id(), g.credit()))
+        .collect();
+    assert_eq!(grants, subscriptions.iter().map(|&id| (id, 1)).collect::<Vec<_>>());
+    for id in subscriptions {
+        assert_eq!(sim.server.borrow().credit(id), Some(1));
+    }
+}
 
 #[test]
 fn stream_delivers_in_order_with_slow_consumer_over_lossy_link() {

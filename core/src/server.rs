@@ -10,7 +10,7 @@ use rpc::{CallId, MethodId, RawReply, RawSink, ServerTypes, Status, StreamError}
 
 use crate::frame::{Frame, Header};
 use crate::link::{Link, LinkConfig, LinkState, LinkStats};
-use crate::proto::Kind;
+use crate::proto::{Credits, Kind};
 use crate::wire_status;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -158,6 +158,16 @@ impl Server {
         self.calls.get_mut(&call_id).and_then(Option::as_mut).ok_or(StreamError::Closed)
     }
 
+    fn grant(&mut self, call_id: u32, credit: u16) {
+        let Ok(stream) = self.stream(call_id) else {
+            return; // ended or cancelled meanwhile
+        };
+        stream.credit = stream.credit.saturating_add(credit);
+        if let Some(value) = stream.latest.take() {
+            let _ = self.send(call_id, value);
+        }
+    }
+
     fn dispatch(&mut self, frame: Frame) {
         let h = frame.header;
         match h.kind {
@@ -188,12 +198,11 @@ impl Server {
                 });
             }
             Kind::Credit => {
-                let Ok(stream) = self.stream(h.call_id) else {
+                let Ok(credits) = flatbuffers::root::<Credits>(&frame.payload) else {
                     return;
                 };
-                stream.credit = stream.credit.saturating_add(h.credit);
-                if let Some(value) = stream.latest.take() {
-                    let _ = self.send(h.call_id, value);
+                for grant in credits.grants().iter().flatten() {
+                    self.grant(grant.call_id(), grant.credit());
                 }
             }
             Kind::Cancel if self.calls.remove(&h.call_id).is_some() => {

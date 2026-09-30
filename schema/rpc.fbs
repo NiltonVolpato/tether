@@ -31,7 +31,8 @@ enum Kind : ubyte {
     Item,
     /// Server -> client: channel `call_id` closed with `status`.
     End,
-    /// Client -> server: the app consumed `credit` more items of `call_id`.
+    /// Client -> server: more credit for one or more channels. Payload:
+    /// Credits.
     Credit,
     /// Client -> server: the client dropped `call_id`.
     Cancel,
@@ -59,6 +60,18 @@ table Hello {
     boot_id: uint32;
     /// The peer's boot_id as seen by the sender, 0 if none yet.
     peer_boot_id: uint32;
+}
+
+/// `credit` more items for channel `call_id`.
+struct Grant {
+    call_id: uint32;
+    credit: uint16;
+}
+
+/// Every channel's new credit since the last Credit frame, so freeing slots
+/// in many channels costs one round trip.
+table Credits {
+    grants: [Grant];
 }
 
 root_type Header;

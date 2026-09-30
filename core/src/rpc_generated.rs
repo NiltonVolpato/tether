@@ -213,7 +213,8 @@ pub mod rpc {
         pub const Item: Self = Self(5);
         /// Server -> client: channel `call_id` closed with `status`.
         pub const End: Self = Self(6);
-        /// Client -> server: the app consumed `credit` more items of `call_id`.
+        /// Client -> server: more credit for one or more channels. Payload:
+        /// Credits.
         pub const Credit: Self = Self(7);
         /// Client -> server: the client dropped `call_id`.
         pub const Cancel: Self = Self(8);
@@ -303,6 +304,138 @@ pub mod rpc {
     }
 
     impl ::flatbuffers::SimpleToVerifyInSlice for Kind {}
+    /// `credit` more items for channel `call_id`.
+    // struct Grant, aligned to 4
+    #[repr(transparent)]
+    #[derive(Clone, Copy, PartialEq)]
+    pub struct Grant(pub [u8; 8]);
+    impl Default for Grant {
+        fn default() -> Self {
+            Self([0; 8])
+        }
+    }
+    impl ::core::fmt::Debug for Grant {
+        fn fmt(&self, f: &mut ::core::fmt::Formatter) -> ::core::fmt::Result {
+            f.debug_struct("Grant")
+                .field("call_id", &self.call_id())
+                .field("credit", &self.credit())
+                .finish()
+        }
+    }
+
+    impl ::flatbuffers::SimpleToVerifyInSlice for Grant {}
+    impl<'a> ::flatbuffers::Follow<'a> for Grant {
+        type Inner = &'a Grant;
+        #[inline]
+        unsafe fn follow(buf: &'a [u8], loc: usize) -> Self::Inner {
+            unsafe { <&'a Grant>::follow(buf, loc) }
+        }
+    }
+    impl<'a> ::flatbuffers::Follow<'a> for &'a Grant {
+        type Inner = &'a Grant;
+        #[inline]
+        unsafe fn follow(buf: &'a [u8], loc: usize) -> Self::Inner {
+            unsafe { ::flatbuffers::follow_cast_ref::<Grant>(buf, loc) }
+        }
+    }
+    impl<'b> ::flatbuffers::Push for Grant {
+        type Output = Grant;
+        #[inline]
+        unsafe fn push(&self, dst: &mut [u8], _written_len: usize) {
+            let src = unsafe {
+                ::core::slice::from_raw_parts(
+                    self as *const Grant as *const u8,
+                    <Self as ::flatbuffers::Push>::size(),
+                )
+            };
+            dst.copy_from_slice(src);
+        }
+        #[inline]
+        fn alignment() -> ::flatbuffers::PushAlignment {
+            ::flatbuffers::PushAlignment::new(4)
+        }
+    }
+
+    impl<'a> ::flatbuffers::Verifiable for Grant {
+        #[inline]
+        fn run_verifier(
+            v: &mut ::flatbuffers::Verifier,
+            pos: usize,
+        ) -> Result<(), ::flatbuffers::InvalidFlatbuffer> {
+            v.in_buffer::<Self>(pos)
+        }
+    }
+
+    impl<'a> Grant {
+        #[allow(clippy::too_many_arguments)]
+        pub fn new(call_id: u32, credit: u16) -> Self {
+            let mut s = Self([0; 8]);
+            s.set_call_id(call_id);
+            s.set_credit(credit);
+            s
+        }
+
+        pub fn call_id(&self) -> u32 {
+            let mut mem =
+                ::core::mem::MaybeUninit::<<u32 as ::flatbuffers::EndianScalar>::Scalar>::uninit();
+            // Safety:
+            // Created from a valid Table for this object
+            // Which contains a valid value in this slot
+            ::flatbuffers::EndianScalar::from_little_endian(unsafe {
+                ::core::ptr::copy_nonoverlapping(
+                    self.0[0..].as_ptr(),
+                    mem.as_mut_ptr() as *mut u8,
+                    ::core::mem::size_of::<<u32 as ::flatbuffers::EndianScalar>::Scalar>(),
+                );
+                mem.assume_init()
+            })
+        }
+
+        pub fn set_call_id(&mut self, x: u32) {
+            let x_le = ::flatbuffers::EndianScalar::to_little_endian(x);
+            // Safety:
+            // Created from a valid Table for this object
+            // Which contains a valid value in this slot
+            unsafe {
+                ::core::ptr::copy_nonoverlapping(
+                    &x_le as *const _ as *const u8,
+                    self.0[0..].as_mut_ptr(),
+                    ::core::mem::size_of::<<u32 as ::flatbuffers::EndianScalar>::Scalar>(),
+                );
+            }
+        }
+
+        pub fn credit(&self) -> u16 {
+            let mut mem =
+                ::core::mem::MaybeUninit::<<u16 as ::flatbuffers::EndianScalar>::Scalar>::uninit();
+            // Safety:
+            // Created from a valid Table for this object
+            // Which contains a valid value in this slot
+            ::flatbuffers::EndianScalar::from_little_endian(unsafe {
+                ::core::ptr::copy_nonoverlapping(
+                    self.0[4..].as_ptr(),
+                    mem.as_mut_ptr() as *mut u8,
+                    ::core::mem::size_of::<<u16 as ::flatbuffers::EndianScalar>::Scalar>(),
+                );
+                mem.assume_init()
+            })
+        }
+
+        pub fn set_credit(&mut self, x: u16) {
+            let x_le = ::flatbuffers::EndianScalar::to_little_endian(x);
+            // Safety:
+            // Created from a valid Table for this object
+            // Which contains a valid value in this slot
+            unsafe {
+                ::core::ptr::copy_nonoverlapping(
+                    &x_le as *const _ as *const u8,
+                    self.0[4..].as_mut_ptr(),
+                    ::core::mem::size_of::<<u16 as ::flatbuffers::EndianScalar>::Scalar>(),
+                );
+            }
+        }
+    }
+
     pub enum HeaderOffset {}
     #[derive(Copy, Clone, PartialEq)]
 
@@ -633,6 +766,122 @@ pub mod rpc {
             let mut ds = f.debug_struct("Hello");
             ds.field("boot_id", &self.boot_id());
             ds.field("peer_boot_id", &self.peer_boot_id());
+            ds.finish()
+        }
+    }
+    pub enum CreditsOffset {}
+    #[derive(Copy, Clone, PartialEq)]
+
+    /// Every channel's new credit since the last Credit frame, so freeing slots
+    /// in many channels costs one round trip.
+    pub struct Credits<'a> {
+        pub _tab: ::flatbuffers::Table<'a>,
+    }
+
+    impl<'a> ::flatbuffers::Follow<'a> for Credits<'a> {
+        type Inner = Credits<'a>;
+        #[inline]
+        unsafe fn follow(buf: &'a [u8], loc: usize) -> Self::Inner {
+            Self { _tab: unsafe { ::flatbuffers::Table::new(buf, loc) } }
+        }
+    }
+
+    impl<'a> Credits<'a> {
+        pub const VT_GRANTS: ::flatbuffers::VOffsetT = 4;
+
+        #[inline]
+        pub unsafe fn init_from_table(table: ::flatbuffers::Table<'a>) -> Self {
+            Credits { _tab: table }
+        }
+        #[allow(unused_mut)]
+        pub fn create<
+            'bldr: 'args,
+            'args: 'mut_bldr,
+            'mut_bldr,
+            A: ::flatbuffers::Allocator + 'bldr,
+        >(
+            _fbb: &'mut_bldr mut ::flatbuffers::FlatBufferBuilder<'bldr, A>,
+            args: &'args CreditsArgs<'args>,
+        ) -> ::flatbuffers::WIPOffset<Credits<'bldr>> {
+            let mut builder = CreditsBuilder::new(_fbb);
+            if let Some(x) = args.grants {
+                builder.add_grants(x);
+            }
+            builder.finish()
+        }
+
+        #[inline]
+        pub fn grants(&self) -> Option<::flatbuffers::Vector<'a, Grant>> {
+            // Safety:
+            // Created from valid Table for this object
+            // which contains a valid value in this slot
+            unsafe {
+                self._tab
+                    .get::<::flatbuffers::ForwardsUOffset<::flatbuffers::Vector<'a, Grant>>>(
+                        Credits::VT_GRANTS,
+                        None,
+                    )
+            }
+        }
+    }
+
+    impl ::flatbuffers::Verifiable for Credits<'_> {
+        #[inline]
+        fn run_verifier(
+            v: &mut ::flatbuffers::Verifier,
+            pos: usize,
+        ) -> Result<(), ::flatbuffers::InvalidFlatbuffer> {
+            v.visit_table(pos)?
+                .visit_field::<::flatbuffers::ForwardsUOffset<::flatbuffers::Vector<'_, Grant>>>(
+                    "grants",
+                    Self::VT_GRANTS,
+                    false,
+                )?
+                .finish();
+            Ok(())
+        }
+    }
+    pub struct CreditsArgs<'a> {
+        pub grants: Option<::flatbuffers::WIPOffset<::flatbuffers::Vector<'a, Grant>>>,
+    }
+    impl<'a> Default for CreditsArgs<'a> {
+        #[inline]
+        fn default() -> Self {
+            CreditsArgs { grants: None }
+        }
+    }
+
+    pub struct CreditsBuilder<'a: 'b, 'b, A: ::flatbuffers::Allocator + 'a> {
+        fbb_: &'b mut ::flatbuffers::FlatBufferBuilder<'a, A>,
+        start_: ::flatbuffers::WIPOffset<::flatbuffers::TableUnfinishedWIPOffset>,
+    }
+    impl<'a: 'b, 'b, A: ::flatbuffers::Allocator + 'a> CreditsBuilder<'a, 'b, A> {
+        #[inline]
+        pub fn add_grants(
+            &mut self,
+            grants: ::flatbuffers::WIPOffset<::flatbuffers::Vector<'b, Grant>>,
+        ) {
+            self.fbb_
+                .push_slot_always::<::flatbuffers::WIPOffset<_>>(Credits::VT_GRANTS, grants);
+        }
+        #[inline]
+        pub fn new(
+            _fbb: &'b mut ::flatbuffers::FlatBufferBuilder<'a, A>,
+        ) -> CreditsBuilder<'a, 'b, A> {
+            let start = _fbb.start_table();
+            CreditsBuilder { fbb_: _fbb, start_: start }
+        }
+        #[inline]
+        pub fn finish(self) -> ::flatbuffers::WIPOffset<Credits<'a>> {
+            let o = self.fbb_.end_table(self.start_);
+            ::flatbuffers::WIPOffset::new(o.value())
+        }
+    }
+
+    impl ::core::fmt::Debug for Credits<'_> {
+        fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+            let mut ds = f.debug_struct("Credits");
+            ds.field("grants", &self.grants());
             ds.finish()
         }
     }
