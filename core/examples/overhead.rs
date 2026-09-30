@@ -1,7 +1,7 @@
 //! Prints the wire size of typical frames.
 
-use rpc_experiment::frame::{self, Header};
-use rpc_experiment::proto::{Kind, Status};
+use rpc_core::frame::{self, Header};
+use rpc_core::proto::{Kind, Status};
 
 fn main() {
     let cases = [

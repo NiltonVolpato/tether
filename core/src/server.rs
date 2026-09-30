@@ -6,7 +6,7 @@ use alloc::rc::Rc;
 use alloc::vec::Vec;
 use core::cell::RefCell;
 
-use api::{CallId, MethodId, RawReply, RawSink, ServerTypes, Status, StreamError};
+use rpc::{CallId, MethodId, RawReply, RawSink, ServerTypes, Status, StreamError};
 
 use crate::frame::{Frame, Header};
 use crate::link::{Link, LinkConfig, LinkState, LinkStats};

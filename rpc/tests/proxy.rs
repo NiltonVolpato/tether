@@ -6,7 +6,7 @@ mod support;
 
 use std::task::{Context, Poll, Waker};
 
-use api::{
+use rpc::{
     CallId, MethodId, RawCall, RawChannel, RawReply, RawSink, ServerTypes, Service, Status,
     Transport,
 };
@@ -157,7 +157,7 @@ fn dropping_a_channel_cancels_through_the_proxy() {
 #[test]
 fn methods_the_upstream_lacks_are_unimplemented() {
     let server = proxied();
-    let mut call = api::Call::<_, support::text::Text>::new(server.call(
+    let mut call = rpc::Call::<_, support::text::Text>::new(server.call(
         MethodId::new(greeter::ID, 9),
         &[],
         5000,

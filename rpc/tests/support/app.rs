@@ -3,7 +3,7 @@
 use std::pin::pin;
 use std::task::{Context, Poll, Waker};
 
-use api::{CallId, Message, ServerTypes, Sink, Status, StreamError, Transport};
+use rpc::{CallId, Message, ServerTypes, Sink, Status, StreamError, Transport};
 
 use super::greeter;
 use super::text::{Text, TextT};
@@ -55,7 +55,7 @@ impl<S: ServerTypes> Polite<S> {
 }
 
 impl<S: ServerTypes> greeter::Handler<S> for Polite<S> {
-    fn say_hello(&mut self, reply: api::Reply<S::Reply, TextT>, name: &str) {
+    fn say_hello(&mut self, reply: rpc::Reply<S::Reply, TextT>, name: &str) {
         if name.is_empty() {
             reply.send(Err(Status::InvalidArgument));
         } else {

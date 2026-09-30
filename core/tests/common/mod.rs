@@ -4,10 +4,10 @@
 
 use std::collections::VecDeque;
 
-use rpc_experiment::client::{Client, SharedClient};
-use rpc_experiment::link::{LinkConfig, LinkState};
-use rpc_experiment::router::Router;
-use rpc_experiment::server::{Server, ServerEvent, SharedServer};
+use rpc_core::client::{Client, SharedClient};
+use rpc_core::link::{LinkConfig, LinkState};
+use rpc_core::router::Router;
+use rpc_core::server::{Server, ServerEvent, SharedServer};
 
 pub struct Rng(pub u64);
 

@@ -1,10 +1,10 @@
-//! Application code written against the api, tested with fakes.
+//! Application code written against the `rpc` traits, tested with fakes.
 
 mod support;
 
 use std::task::{Context, Poll, Waker};
 
-use api::{CallId, Pack, RawChannel, Service, Status, Transport, lookup};
+use rpc::{CallId, Pack, RawChannel, Service, Status, Transport, lookup};
 use support::app::{Polite, greeting, now, text};
 use support::fakes::{FakeTransport, Loop, Loopback, Recorder, Recording, Sent};
 use support::greeter;
@@ -62,7 +62,7 @@ fn handler_replies() {
     let recorder = Recorder::default();
     let mut service = greeter::Service(Polite::<Recording>::default());
     let reply = recorder.reply();
-    let call = api::RawReply::call_id(&reply);
+    let call = rpc::RawReply::call_id(&reply);
 
     service.call(0, &TextT::new("Ada").to_bytes(), reply);
     let sent = recorder.take();
@@ -160,8 +160,8 @@ fn server_table_lookup() {
         (service.name, method.name, method.streaming),
         ("Test.Greeter", "Countdown", true)
     );
-    assert!(lookup(greeter::SERVER, api::MethodId::new(0, 2)).is_none());
-    assert!(lookup(greeter::SERVER, api::MethodId::new(1, 0)).is_none());
+    assert!(lookup(greeter::SERVER, rpc::MethodId::new(0, 2)).is_none());
+    assert!(lookup(greeter::SERVER, rpc::MethodId::new(1, 0)).is_none());
 }
 
 #[test]

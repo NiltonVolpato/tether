@@ -7,9 +7,9 @@ use alloc::vec::Vec;
 use core::cell::RefCell;
 use core::task::{Context, Poll, Waker};
 
-use api::{MethodId, RawCall, RawChannel, Status, Transport};
+use rpc::{MethodId, RawCall, RawChannel, Status, Transport};
 
-use crate::api_status;
+use crate::rpc_status;
 use crate::frame::{Frame, Header};
 use crate::link::{Link, LinkConfig, LinkState, LinkStats};
 use crate::proto::Kind;
@@ -312,7 +312,7 @@ impl Client {
             Kind::Item if slot.items.len() >= capacity => self.stats.overruns += 1,
             Kind::Item => slot.items.push_back(frame.payload),
             _ => {
-                let result = api_status(h.status);
+                let result = rpc_status(h.status);
                 if result.is_ok() && h.kind == Kind::Response {
                     slot.items.push_back(frame.payload);
                 }

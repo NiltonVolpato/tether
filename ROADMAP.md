@@ -23,7 +23,7 @@ Rust on the S3 (client); C++ on the co-processor (server).
 - [x] Router: direct-indexed dispatch; automatic `UNIMPLEMENTED` and `INVALID_ARGUMENT`
 - [x] Framework schemas kept apart from the test application's schema
 
-## API (`api` crate: the generic middle layer; traits and data objects only)
+## API (`rpc` crate: the generic middle layer; traits and data objects only)
 
 Generated code is the thin typed layer on top of it, and the core the
 schema-agnostic layer below it.
@@ -34,13 +34,13 @@ schema-agnostic layer below it.
 - [x] Spec of generated code (a hand-written `Greeter`) and tests of user code against fakes
 - [x] A proxy using only the generic layer forwards calls, channels, credit and cancellation (test)
 - [ ] Router catch-all, so a proxy can serve services it doesn't know
-- [ ] Consider renaming `api`, since apps mostly use generated code
-- [x] rpcgen generates code that depends only on `api`, as in the `Greeter` spec
+- [x] Rename `api` to `rpc`; the core becomes `rpc-core`, in a virtual workspace
+- [x] rpcgen generates code that depends only on `rpc`, as in the `Greeter` spec
 - [x] The core implements `Transport` and `ServerTypes`; its router dispatches to `api::Service`
 - [x] The core maps wire status codes to `api::Status`
-- [ ] Decide whether to ship the in-process `Loopback` fake to users (e.g. an `api-testing` crate)
+- [ ] Decide whether to ship the in-process `Loopback` fake to users (e.g. an `rpc-testing` crate)
 
-## Core
+## Core (`rpc-core` crate)
 
 - [ ] Choose the interior mutability behind `SharedClient` and `SharedServer` (a `RefCell` for now, i.e. one executor; depends on the S3 task/executor layout)
 - [ ] Liveness: ping and a retransmit limit, so a dead peer is detected (replaces Heartbeat)

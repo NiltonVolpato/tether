@@ -5,5 +5,5 @@ edition = "2024"
 publish = false
 
 [dependencies]
-api = { version = "0.1.0", path = "../api" }
+rpc = { version = "0.1.0", path = "../rpc" }
 flatbuffers-reflection = "0.1"

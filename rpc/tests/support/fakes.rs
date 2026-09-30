@@ -1,11 +1,11 @@
-//! Fakes of the api traits, written the way an application's tests would.
+//! Fakes of the `rpc` traits, written the way an application's tests would.
 
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, VecDeque};
 use std::rc::Rc;
 use std::task::{Context, Poll, Waker};
 
-use api::{
+use rpc::{
     CallId, MethodId, Pack, RawCall, RawChannel, RawReply, RawSink, ServerTypes, Service, Status,
     StreamError, Transport,
 };

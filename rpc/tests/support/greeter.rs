@@ -12,9 +12,9 @@
 //! enum Server : ubyte (rpc_server) { Greeter }
 //! ```
 //!
-//! It depends on the `api` crate only.
+//! It depends on the `rpc` crate only.
 
-use api::{
+use rpc::{
     Call, CallId, Channel, MethodId, MethodInfo, Pack, RawReply, RawSink, Reply, ServerTable,
     ServerTypes, ServiceInfo, Sink, Status, Table, Transport,
 };
@@ -60,7 +60,7 @@ pub trait Handler<S: ServerTypes> {
 
 pub struct Service<H>(pub H);
 
-impl<S: ServerTypes, H: Handler<S>> api::Service<S> for Service<H> {
+impl<S: ServerTypes, H: Handler<S>> rpc::Service<S> for Service<H> {
     fn id(&self) -> u8 {
         ID
     }

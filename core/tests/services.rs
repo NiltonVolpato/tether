@@ -10,12 +10,12 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
-use api::{CallId, MethodId, Reply, Sink, Status, StreamError, Transport, lookup};
+use rpc::{CallId, MethodId, Reply, Sink, Status, StreamError, Transport, lookup};
 use common::{ServerApp, Sim};
 use generated::coprocessor_generated::coprocessor_proto::*;
 use generated::coprocessor_rpc::coprocessor_proto::{COPROCESSOR, clock, dashboard, sonos, wifi};
-use rpc_experiment::router::Router;
-use rpc_experiment::server::{Server, ServerEvent, ServerReply, ServerSink, SharedServer};
+use rpc_core::router::Router;
+use rpc_core::server::{Server, ServerEvent, ServerReply, ServerSink, SharedServer};
 
 #[derive(Default)]
 struct FakeWifi {

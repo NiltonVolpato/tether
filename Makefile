@@ -3,20 +3,20 @@
 FLATC := flatc
 RUSTFMT := rustup run nightly rustfmt --edition 2024 --config-path .rustfmt.toml
 BUILD := build
-GEN := tests/generated
+GEN := core/tests/generated
 
-all: src/rpc_generated.rs $(GEN)/coprocessor_generated.rs $(GEN)/coprocessor_rpc.rs
+all: core/src/rpc_generated.rs $(GEN)/coprocessor_generated.rs $(GEN)/coprocessor_rpc.rs
 
-src/rpc_generated.rs: schema/rpc.fbs schema/status.fbs
-	$(FLATC) --rust --gen-all -o src/ schema/rpc.fbs
+core/src/rpc_generated.rs: schema/rpc.fbs schema/status.fbs
+	$(FLATC) --rust --gen-all -o core/src/ schema/rpc.fbs
 	$(RUSTFMT) $@
 
 # The test application's schema; it includes the framework's attributes.
-$(GEN)/coprocessor_generated.rs: tests/coprocessor.fbs schema/rpc_attributes.fbs
+$(GEN)/coprocessor_generated.rs: core/tests/coprocessor.fbs schema/rpc_attributes.fbs
 	$(FLATC) --rust --gen-object-api --gen-all -I schema -o $(GEN)/ $<
 	$(RUSTFMT) $@
 
-$(BUILD)/%.bfbs: tests/%.fbs schema/rpc_attributes.fbs
+$(BUILD)/%.bfbs: core/tests/%.fbs schema/rpc_attributes.fbs
 	$(FLATC) -b --schema --bfbs-builtins --bfbs-comments -I schema -o $(BUILD)/ $<
 
 $(GEN)/coprocessor_rpc.rs: $(BUILD)/coprocessor.bfbs $(wildcard rpcgen/src/*.rs)

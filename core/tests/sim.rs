@@ -7,13 +7,13 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::task::{Context, Poll, Wake, Waker};
 
-use api::{MethodId, RawChannel, Status, StreamError};
+use rpc::{MethodId, RawChannel, Status, StreamError};
 use common::{ServerApp, Sim};
-use rpc_experiment::client::{Channel, Client};
-use rpc_experiment::frame::{self, Deframer, FrameError, Header};
-use rpc_experiment::link::{LinkConfig, LinkState};
-use rpc_experiment::proto::{self, Kind};
-use rpc_experiment::server::{Server, ServerEvent, SharedServer};
+use rpc_core::client::{Channel, Client};
+use rpc_core::frame::{self, Deframer, FrameError, Header};
+use rpc_core::link::{LinkConfig, LinkState};
+use rpc_core::proto::{self, Kind};
+use rpc_core::server::{Server, ServerEvent, SharedServer};
 
 /// Unary: responds with the payload reversed.
 const ECHO: MethodId = MethodId::new(0, 0);

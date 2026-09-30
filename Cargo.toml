@@ -1,14 +1,3 @@
-[package]
-name = "rpc-experiment"
-version = "0.1.0"
-edition = "2024"
-publish = false
-
 [workspace]
-members = ["api", "rpcgen"]
-
-[dependencies]
-flatbuffers = { version = "25.12.19", default-features = false }
-cobs = { version = "0.5.1", default-features = false, features = ["alloc"] }
-crc32fast = { version = "1.5.2", default-features = false }
-api = { version = "0.1.0", path = "api" }
+members = ["core", "rpc", "rpcgen"]
+resolver = "3"

@@ -1,6 +1,6 @@
 //! A message whose root is a string, standing in for a flatc-generated table.
 
-use api::{Pack, Table, flatbuffers};
+use rpc::{Pack, Table, flatbuffers};
 
 pub struct Text;
 
