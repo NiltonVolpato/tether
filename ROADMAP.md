@@ -56,7 +56,7 @@ schema-agnostic layer below it.
 
 - [ ] C++ core: framing, link, server, router
 - [ ] rpcgen C++ output: server table, handler interfaces, typed sinks and replies
-- [ ] Cross-language conformance: shared golden frames
+- [x] Cross-language conformance: shared golden frames (`golden/frames.txt`, from `core/tests/golden.rs`)
 - [ ] Cross-language conformance: C++ core built into the Rust simulation tests
 
 ## Integration
