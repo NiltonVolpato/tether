@@ -227,7 +227,9 @@ fn silent_server_is_lost_and_calls_fail() {
     sim.run_until(2_000, |s| s.client.borrow().link_state() == LinkState::PeerLost);
     // An idle link: one ping interval, then the retransmits.
     let cfg = LinkConfig::default();
-    let bound = cfg.ping_interval_ms + (u64::from(cfg.max_retransmits) + 1) * cfg.retransmit_ms;
+    let ping = frame::encode(&Header { seq: 1, ..Header::new(Kind::Ping) }, &[]).len();
+    let bound =
+        cfg.ping_interval_ms + (u64::from(cfg.max_retransmits) + 1) * cfg.retransmit_timeout(ping);
     assert!(sim.now - cut_at <= bound + 10, "lost after {} ms", sim.now - cut_at);
 
     assert_eq!(call.try_result(), Some(Err(Status::Unavailable)));

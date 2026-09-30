@@ -16,7 +16,12 @@ use crate::wire::{Hello, HelloArgs, Kind};
 
 #[derive(Clone, Copy, Debug)]
 pub struct LinkConfig {
+    /// The wait for an ack beyond the time frames take on the wire: the
+    /// peer's latency to answer. See `retransmit_timeout`.
     pub retransmit_ms: u64,
+    /// The line's rate, for the time frames take on the wire (8N1: 10 bits a
+    /// byte).
+    pub baud_rate: u32,
     /// Retransmits of one frame without an ack before the peer is lost.
     pub max_retransmits: u32,
     /// Silence from the peer, while linked, before a Ping goes out.
@@ -30,11 +35,22 @@ impl Default for LinkConfig {
     fn default() -> Self {
         Self {
             retransmit_ms: 20,
+            baud_rate: 921_600,
             max_retransmits: 25,
             ping_interval_ms: 250,
             hello_interval_ms: 50,
             max_frame: 1024,
         }
+    }
+}
+
+impl LinkConfig {
+    /// How long to wait for the ack of a frame of `wire_len` bytes: the base,
+    /// plus the frame's time on the wire and the time of the largest frame the
+    /// peer may have started sending just before, ahead of its ack.
+    pub fn retransmit_timeout(&self, wire_len: usize) -> u64 {
+        let bits = (wire_len + self.max_frame + 1) as u64 * 10;
+        self.retransmit_ms + (bits * 1000).div_ceil(u64::from(self.baud_rate.max(1)))
     }
 }
 
@@ -76,6 +92,7 @@ struct InFlight {
     seq: u16,
     wire: Vec<u8>,
     sent_at: u64,
+    timeout: u64,
     retransmits: u32,
 }
 
@@ -195,7 +212,7 @@ impl Link {
             return None;
         }
         if let Some(f) = &mut self.in_flight {
-            if now < f.sent_at + self.cfg.retransmit_ms {
+            if now < f.sent_at + f.timeout {
                 return None;
             }
             if f.retransmits == self.cfg.max_retransmits {
@@ -215,8 +232,14 @@ impl Link {
         header.seq = self.next_seq;
         self.next_seq = next(self.next_seq);
         let wire = frame::encode(&header, &payload);
-        self.in_flight =
-            Some(InFlight { seq: header.seq, wire: wire.clone(), sent_at: now, retransmits: 0 });
+        let timeout = self.cfg.retransmit_timeout(wire.len());
+        self.in_flight = Some(InFlight {
+            seq: header.seq,
+            wire: wire.clone(),
+            sent_at: now,
+            timeout,
+            retransmits: 0,
+        });
         Some(wire)
     }
 

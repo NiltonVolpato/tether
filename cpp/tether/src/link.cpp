@@ -56,6 +56,7 @@ Link::Link(uint32_t boot_id, const LinkConfig& config, LinkBuffers buffers)
     : config_(config),
       boot_id_(boot_id),
       deframer_(buffers.receive),
+      max_frame_(buffers.receive.size()),
       queue_(buffers.queue) {
   if (boot_id == 0) {
     std::abort();  // 0 means "none yet" in a Hello.
@@ -105,7 +106,7 @@ std::optional<std::span<const std::byte>> Link::poll_transmit(Millis now) {
     return std::nullopt;
   }
   if (in_flight_) {
-    if (now < sent_at_ + config_.retransmit) {
+    if (now < sent_at_ + timeout_) {
       return std::nullopt;
     }
     if (retransmits_ == config_.max_retransmits) {
@@ -127,6 +128,7 @@ std::optional<std::span<const std::byte>> Link::poll_transmit(Millis now) {
   }
   in_flight_ = true;
   sent_at_ = now;
+  timeout_ = retransmit_timeout(queue_.front().size());
   retransmits_ = 0;
   return transmit(queue_.front());
 }
@@ -142,12 +144,19 @@ std::optional<Millis> Link::next_deadline() const {
     return last_hello_at_ ? *last_hello_at_ + config_.hello_interval : now_;
   }
   if (in_flight_) {
-    return sent_at_ + config_.retransmit;
+    return sent_at_ + timeout_;
   }
   if (!queue_.empty()) {
     return now_;
   }
   return last_heard_at_ + config_.ping_interval;
+}
+
+Millis Link::retransmit_timeout(std::size_t wire_size) const {
+  // The largest frame on the wire: its COBS bytes and the delimiter.
+  const uint64_t bits = (wire_size + max_frame_ + 1) * 10ULL;
+  const uint64_t baud = std::max<uint32_t>(config_.baud_rate, 1);
+  return config_.retransmit + Millis((bits * 1000 + baud - 1) / baud);
 }
 
 std::optional<Frame> Link::push(std::byte b, Millis now) {

@@ -295,9 +295,14 @@ TEST(Link, SilentPeerIsLost) {
   sim.run_until(2s, [&] { return sim.a.link->state() == LinkState::PeerLost; });
   // An idle link: one ping interval, then the retransmits.
   const LinkConfig config;
+  std::array<std::byte, max_wire_size(0)> ping{};
+  const auto ping_size = encode({.kind = Kind::Ping, .seq = 1}, {}, ping);
+  ASSERT_TRUE(ping_size);
   EXPECT_LE(sim.now - cut_at,
             config.ping_interval +
-                (config.max_retransmits + 1) * config.retransmit + 10ms);
+                (config.max_retransmits + 1) *
+                    sim.a.link->retransmit_timeout(*ping_size) +
+                10ms);
   EXPECT_THAT(sim.a.link->next_deadline(), Eq(std::nullopt));
   EXPECT_THAT(sim.a.link->poll_transmit(sim.now), Eq(std::nullopt));
 }

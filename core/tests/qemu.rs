@@ -4,39 +4,46 @@
 //! the rate; 0 for a pty). `make -C cpp qemu-test` starts QEMU and runs these;
 //! they're ignored otherwise.
 //!
-//! For now the device echoes frames, so these check that the two cores agree
-//! on the wire format when the C++ one is built for, and runs on, the target.
+//! The device runs the C++ link and echoes every frame it delivers, so the Rust
+//! link here talks to the C++ one: handshake, retransmits, and both cores'
+//! framing, with the C++ one built for and running on the target.
 
-use std::collections::VecDeque;
 use std::io::{ErrorKind, Read, Write};
-use std::sync::{Mutex, PoisonError};
-use std::time::{Duration, Instant};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, PoisonError, mpsc};
+use std::time::{Duration, Instant, SystemTime};
 
-use tether_core::frame::{self, Deframer, Frame, Header};
-use tether_core::wire::{Credits, CreditsArgs, Grant, Hello, HelloArgs, Kind, Status};
+use tether_core::frame::{Frame, Header};
+use tether_core::link::{Link, LinkConfig, LinkState};
+use tether_core::wire::{Credits, CreditsArgs, Grant, Kind, Status};
 
-/// The device serves one connection at a time.
+/// The device serves one test at a time.
 static DEVICE: Mutex<()> = Mutex::new(());
 
+/// The Rust end of a link to the device. A thread reads the port all the
+/// time: QEMU blocks on writing to a full pty, so a reader that also writes
+/// can deadlock with it.
 struct Device {
     port: Box<dyn serialport::SerialPort>,
-    deframer: Deframer,
-    received: VecDeque<Frame>,
+    received: mpsc::Receiver<Vec<u8>>,
+    stop: Arc<AtomicBool>,
+    reader: Option<std::thread::JoinHandle<()>>,
+    link: Link,
+    start: Instant,
 }
 
 impl Device {
-    /// Connects (retrying while QEMU boots) and syncs: pings until one is
-    /// echoed, since the device drops what arrives before its UART is set up.
-    /// It answers in order, so nothing sent before that echo can follow it.
+    /// Opens the port (retrying while QEMU starts) and links with a new boot
+    /// id. The device sees a reboot, starts a new link of its own, and links
+    /// with this one.
     fn connect() -> Self {
         let path = std::env::var("TETHER_UART").expect("TETHER_UART: the device's serial port");
         // The test app's rate. 0 is for a pty, which has none (and on macOS
         // fails when given one).
         let baud = std::env::var("TETHER_UART_BAUD").map_or(921_600, |b| b.parse().unwrap());
         let deadline = Instant::now() + Duration::from_secs(60);
-        // QEMU creates its pty as it starts.
         let port = loop {
-            match serialport::new(&path, baud).timeout(Duration::from_secs(1)).open() {
+            match serialport::new(&path, baud).timeout(Duration::from_millis(10)).open() {
                 Ok(port) => break port,
                 Err(e) if Instant::now() < deadline => {
                     eprintln!("waiting for {path}: {e}");
@@ -45,64 +52,98 @@ impl Device {
                 Err(e) => panic!("can't open {path}: {e}"),
             }
         };
-        let mut device = Self { port, deframer: Deframer::new(4096), received: VecDeque::new() };
-        let mut attempt = 0;
-        while Instant::now() < deadline {
-            attempt += 1;
-            let sync = Header { call_id: 0x5EC0_0000 + attempt, ..Header::new(Kind::Ping) };
-            device.send(&frame::encode(&sync, &[]));
-            while let Some(frame) = device.try_recv() {
-                if frame.header == sync {
-                    device.port.set_timeout(Duration::from_secs(10)).unwrap();
-                    return device;
+        let (tx, received) = mpsc::channel();
+        let stop = Arc::new(AtomicBool::new(false));
+        let reader = {
+            let mut port = port.try_clone().unwrap();
+            let stop = stop.clone();
+            std::thread::spawn(move || {
+                let mut buf = [0; 512];
+                while !stop.load(Ordering::Relaxed) {
+                    match port.read(&mut buf) {
+                        Ok(n) => tx.send(buf[..n].to_vec()).unwrap(),
+                        Err(e) if matches!(e.kind(), ErrorKind::TimedOut) => {}
+                        Err(e) => panic!("{e}"),
+                    }
                 }
+            })
+        };
+        let nanos = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_nanos();
+        let link = Link::new(nanos as u32 | 1, LinkConfig::default());
+        let mut device =
+            Self { port, received, stop, reader: Some(reader), link, start: Instant::now() };
+        device.pump_until(Duration::from_secs(60), |d| {
+            matches!(d.link.state(), LinkState::Linked { .. })
+        });
+        device
+    }
+
+    fn now(&self) -> u64 {
+        self.start.elapsed().as_millis() as u64
+    }
+
+    /// Runs the link until `done` holds.
+    fn pump_until(&mut self, timeout: Duration, mut done: impl FnMut(&mut Self) -> bool) {
+        let deadline = Instant::now() + timeout;
+        while !done(self) {
+            let (state, stats) = (self.link.state(), self.link.stats());
+            assert!(Instant::now() < deadline, "timed out; link {state:?}, {stats:?}");
+            assert!(!state.is_terminal(), "link {state:?}, {stats:?}");
+            while let Some(wire) = self.link.poll_transmit(self.now()) {
+                self.write(&wire);
+            }
+            // Everything that arrived, before sending again: writes can block
+            // while QEMU drains the pty, and acks mustn't wait behind them.
+            match self.received.recv_timeout(Duration::from_millis(5)) {
+                Ok(bytes) => self.link.receive(&bytes),
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(e) => panic!("the reader stopped: {e}"),
+            }
+            while let Ok(bytes) = self.received.try_recv() {
+                self.link.receive(&bytes);
             }
         }
-        panic!("the device at {path} doesn't answer");
     }
 
-    fn send(&mut self, bytes: &[u8]) {
-        self.port.write_all(bytes).unwrap();
-    }
-
-    fn recv(&mut self) -> Frame {
-        self.try_recv().expect("no frame from the device")
-    }
-
-    /// The next frame, or `None` if none arrives within the read timeout.
-    fn try_recv(&mut self) -> Option<Frame> {
-        let mut buf = [0; 512];
-        loop {
-            if let Some(frame) = self.received.pop_front() {
-                return Some(frame);
-            }
-            let n = match self.port.read(&mut buf) {
-                Ok(0) => panic!("the device closed the connection"),
-                Ok(n) => n,
-                Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
-                    return None;
-                }
-                Err(e) => panic!("{e}"),
-            };
-            for &b in &buf[..n] {
-                if let Some(result) = self.deframer.push(b) {
-                    self.received.push_back(result.expect("the device sent a bad frame"));
-                }
-            }
-        }
-    }
-
+    /// Sends a frame and waits for the device to echo it.
     fn echo(&mut self, header: Header, payload: &[u8]) -> Frame {
-        self.send(&frame::encode(&header, payload));
-        self.recv()
+        self.link.send(header, payload.to_vec());
+        let mut echo = None;
+        self.pump_until(Duration::from_secs(10), |d| {
+            echo = echo.take().or_else(|| d.link.poll_receive());
+            echo.is_some()
+        });
+        echo.unwrap()
+    }
+
+    /// Writes bytes straight to the port, around the link.
+    fn inject(&mut self, bytes: &[u8]) {
+        self.write(bytes);
+    }
+
+    /// Writes all of `bytes`, waiting while the device doesn't read (it
+    /// doesn't while it boots).
+    fn write(&mut self, mut bytes: &[u8]) {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while !bytes.is_empty() {
+            assert!(Instant::now() < deadline, "the device isn't reading");
+            match self.port.write(bytes) {
+                Ok(n) => bytes = &bytes[n..],
+                Err(e) if matches!(e.kind(), ErrorKind::TimedOut) => {}
+                Err(e) => panic!("{e}"),
+            }
+        }
     }
 }
 
-fn hello(boot_id: u32, peer_boot_id: u32) -> Vec<u8> {
-    let mut fbb = flatbuffers::FlatBufferBuilder::new();
-    let hello = Hello::create(&mut fbb, &HelloArgs { boot_id, peer_boot_id });
-    fbb.finish(hello, None);
-    fbb.finished_data().to_vec()
+impl Drop for Device {
+    fn drop(&mut self) {
+        // Stop reading, so the next test's connection gets every byte.
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(reader) = self.reader.take() {
+            let _ = reader.join();
+        }
+    }
 }
 
 fn credits(n: u32) -> Vec<u8> {
@@ -126,17 +167,20 @@ fn unhex(hex: &str) -> Vec<u8> {
         .collect()
 }
 
+/// The echo, with the seq the device's link gave it replaced by ours.
+fn as_sent(echo: Frame, sent: &Header) -> (Header, Vec<u8>) {
+    (Header { seq: sent.seq, ..echo.header }, echo.payload)
+}
+
 #[test]
 #[ignore = "needs the test app in QEMU; run `make -C cpp qemu-test`"]
-fn echoes_the_golden_frames() {
+fn links_with_the_device() {
     let _device = DEVICE.lock().unwrap_or_else(PoisonError::into_inner);
-    let mut device = Device::connect();
-    for golden in golden_frames().iter().filter(|g| g.get("error").is_none()) {
-        let wire = unhex(golden["wire"].as_str().unwrap());
-        let sent = frame::decode(&wire[..wire.len() - 1]).unwrap();
-        device.send(&wire);
-        assert_eq!(device.recv(), sent, "{}", golden["name"]);
-    }
+    let device = Device::connect();
+    let LinkState::Linked { peer_boot_id } = device.link.state() else {
+        unreachable!()
+    };
+    assert_ne!(peer_boot_id, 0);
 }
 
 #[test]
@@ -144,10 +188,18 @@ fn echoes_the_golden_frames() {
 fn echoes_every_kind_with_every_padding() {
     let _device = DEVICE.lock().unwrap_or_else(PoisonError::into_inner);
     let mut device = Device::connect();
-    let mut sent = 0;
-    for &kind in Kind::ENUM_VALUES {
+    let mut sent = 0u32;
+    // The kinds the link delivers; it handles Hello, Ack and Ping itself.
+    for kind in [
+        Kind::Request,
+        Kind::Open,
+        Kind::Response,
+        Kind::Item,
+        Kind::End,
+        Kind::Credit,
+        Kind::Cancel,
+    ] {
         let payloads: Vec<Vec<u8>> = match kind {
-            Kind::Hello => vec![hello(1, 0), hello(u32::MAX, 0xC11E_0001)],
             Kind::Credit => (0..=9).map(credits).collect(),
             // Zeros for COBS, every length modulo 8 for the padding, and runs
             // past one COBS block.
@@ -158,16 +210,15 @@ fn echoes_every_kind_with_every_padding() {
         };
         for (i, payload) in payloads.iter().enumerate() {
             let header = Header {
-                kind,
-                seq: (sent * 257) as u16,
                 call_id: 0xA000_0000 | sent,
                 service: i as u8,
                 method: (i * 3) as u8,
                 credit: (i * 1000) as u16,
                 status: Status(i as i8 % 17),
+                ..Header::new(kind)
             };
             let echo = device.echo(header, payload);
-            assert_eq!((echo.header, &echo.payload), (header, payload), "{kind:?}, {i}");
+            assert_eq!(as_sent(echo, &header), (header, payload.clone()), "{kind:?}, {i}");
             sent += 1;
         }
     }
@@ -175,7 +226,7 @@ fn echoes_every_kind_with_every_padding() {
 
 #[test]
 #[ignore = "needs the test app in QEMU; run `make -C cpp qemu-test`"]
-fn drops_bad_frames_and_resyncs() {
+fn recovers_from_bad_frames_and_line_noise() {
     let _device = DEVICE.lock().unwrap_or_else(PoisonError::into_inner);
     let mut device = Device::connect();
     let bad: Vec<_> = (golden_frames().iter())
@@ -183,30 +234,26 @@ fn drops_bad_frames_and_resyncs() {
         .map(|g| unhex(g["wire"].as_str().unwrap()))
         .collect();
     assert!(!bad.is_empty());
-    let cancel = |call_id| Header { call_id, ..Header::new(Kind::Cancel) };
     for (i, wire) in bad.iter().enumerate() {
-        // A bad frame, then noise up to a delimiter: neither costs the next frame.
-        device.send(wire);
-        device.send(&[0x55, 0xAA, 0x13, 0x00]);
-        assert_eq!(device.echo(cancel(i as u32), &[]).header, cancel(i as u32), "after {i}");
+        // A bad frame, then noise without a delimiter: the next frame, ours or
+        // an ack, is lost, and the link retransmits.
+        device.inject(wire);
+        device.inject(&[0x55, 0xAA, 0x13]);
+        let header = Header { call_id: i as u32, ..Header::new(Kind::Cancel) };
+        let echo = device.echo(header, &[1, 2, 3]);
+        assert_eq!(as_sent(echo, &header), (header, vec![1, 2, 3]), "after {i}");
     }
-    // Noise without a delimiter becomes the start of the next frame, which is
-    // lost (the link retransmits it); the one after that is fine.
-    device.send(&[0x55, 0xAA, 0x13]);
-    device.send(&frame::encode(&cancel(100), &[]));
-    assert_eq!(device.echo(cancel(101), &[]).header, cancel(101));
+    // Some frame was lost, in one direction or the other.
+    let stats = device.link.stats();
+    assert!(stats.retransmits + stats.duplicates > 0, "the noise cost no frame: {stats:?}");
 }
 
 #[test]
 #[ignore = "needs the test app in QEMU; run `make -C cpp qemu-test`"]
-fn verifies_framework_payloads_on_the_device() {
+fn verifies_credits_on_the_device() {
     let _device = DEVICE.lock().unwrap_or_else(PoisonError::into_inner);
     let mut device = Device::connect();
-    let header = Header::new(Kind::Hello);
-    assert_eq!(device.echo(header, &hello(7, 9)).header.status, Status::OK);
-    let garbage = [0xFF; 24];
-    assert_eq!(device.echo(header, &garbage).header.status, Status::DATA_LOSS);
     let header = Header::new(Kind::Credit);
     assert_eq!(device.echo(header, &credits(3)).header.status, Status::OK);
-    assert_eq!(device.echo(header, &garbage).header.status, Status::DATA_LOSS);
+    assert_eq!(device.echo(header, &[0xFF; 24]).header.status, Status::DATA_LOSS);
 }

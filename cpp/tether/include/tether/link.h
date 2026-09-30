@@ -30,7 +30,12 @@ namespace tether {
 using Millis = std::chrono::milliseconds;
 
 struct LinkConfig {
+  // The wait for an ack beyond the time frames take on the wire: the peer's
+  // latency to answer. See Link::retransmit_timeout.
   Millis retransmit{20};
+  // The line's rate, for the time frames take on the wire (8N1: 10 bits a
+  // byte).
+  uint32_t baud_rate = 921600;
   // Retransmits of one frame without an ack before the peer is lost.
   uint32_t max_retransmits = 25;
   // Silence from the peer, while linked, before a Ping goes out.
@@ -148,6 +153,12 @@ class Link {
   // first. Nothing once the link is terminal.
   [[nodiscard]] std::optional<Millis> next_deadline() const;
 
+  // How long to wait for the ack of a frame of `wire_size` bytes: the base,
+  // plus the frame's time on the wire and the time of the largest frame the
+  // peer may have started sending just before, ahead of its ack. That largest
+  // frame is the largest this end accepts.
+  [[nodiscard]] Millis retransmit_timeout(std::size_t wire_size) const;
+
  private:
   // Room for an Ack or a Hello, which aren't queued.
   static constexpr std::size_t kUnsequencedSize = max_wire_size(32);
@@ -165,6 +176,7 @@ class Link {
   LinkState state_ = LinkState::Connecting;
   uint32_t peer_boot_id_ = 0;
   Deframer deframer_;
+  std::size_t max_frame_;
   LinkStats stats_{};
   // The latest time passed in.
   Millis now_{};
@@ -176,6 +188,7 @@ class Link {
   uint16_t oldest_seq_ = 1;
   bool in_flight_ = false;
   Millis sent_at_{};
+  Millis timeout_{};
   uint32_t retransmits_ = 0;
   std::optional<uint16_t> ack_due_;
   bool hello_reply_due_ = false;

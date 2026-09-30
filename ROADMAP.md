@@ -45,6 +45,9 @@ schema-agnostic layer below it.
 
 - [ ] Choose the interior mutability behind `SharedClient` and `SharedServer` (a `RefCell` for now, i.e. one executor; depends on the S3 task/executor layout)
 - [x] Liveness: ping and a retransmit limit, so a dead peer is detected (replaces Heartbeat)
+- [x] Retransmit timeout sized to the frame: base + (frame + peer's largest frame) at the baud
+      rate; a fixed 20 ms collapsed the link with ~1 KB frames at 921600 (found in QEMU)
+- [ ] Exponential backoff on retransmits, with liveness as a time budget instead of a count
 - [x] Credits: the client scans its channels each poll (dropped ones are cancelled) and sends
       all grants in one Credit frame; replaces the handles' outbox
 - [ ] Fixed-capacity memory: bounded tables and queues instead of `Vec`/`BTreeMap`/`VecDeque`
@@ -55,7 +58,8 @@ schema-agnostic layer below it.
 
 ## C++ (co-processor)
 
-- [ ] C++ core: framing (done: passes the goldens), link (done: host tests, event-driven sim), server, router
+- [ ] C++ core: framing (done: passes the goldens), link (done: host tests, event-driven sim,
+      and against the Rust link in QEMU), server, router
 - [ ] tether-gen C++ output: server table, handler interfaces, typed sinks and replies
 - [x] Cross-language conformance: shared golden frames (`golden/frames.json`, decoded by flatc)
 - [ ] Cross-language conformance: C++ core built into the Rust simulation tests
@@ -65,9 +69,12 @@ schema-agnostic layer below it.
 ## Integration
 
 - [ ] S3: embassy UART glue and task layout; wake the I/O task when an app consumes or drops
+- [ ] `tether_idf` component: the FreeRTOS task glue, blocking on a queue set of the UART
+      driver's event queue and a wake semaphore, with the link's next deadline as the timeout.
+      Acks stay in that task (high priority); ack from the UART ISR only if measured ack latency
+      limits 5 Mbps (it would need the link's seq state shared with the ISR)
 - [ ] Recovery from a terminal link (`PeerLost`, `PeerRebooted`): new client with a new boot id,
       or reset the co-processor
-- [ ] Co-processor: FreeRTOS UART task glue
 - [ ] Port Wifi and provisioning to services
 - [ ] Port time sync and battery to services
 - [ ] Remove the old Heartbeat/Hello code on both sides
