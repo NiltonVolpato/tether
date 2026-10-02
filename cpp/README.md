@@ -14,6 +14,13 @@ the Rust client.
   its method, from the server's table (`descriptor.h`), and answers the rest
   `UNIMPLEMENTED`. `Service` is what tether-gen's output will implement.
 
+- `typed.h`: `Reply<T>` and `Sink<T>` over the raw ones, and `verify<T>`. Messages
+  are built with a flatbuffers builder in the server's scratch memory, since
+  flatc's object API allocates.
+- tether-gen's C++ output (`--lang cpp`): a `constexpr` table for each
+  `rpc_server`, and for each `rpc_service` a `Handler` to implement and a
+  `Service` that verifies requests and calls it. Servers only, for now.
+
 `StaticLink`, `StaticServer` and `StaticRouter` bring their own memory, sized by
 template parameters.
 

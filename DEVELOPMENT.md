@@ -85,6 +85,10 @@ make            # regenerates what's out of date
 | `cpp/tether/generated/tether/wire_generated.h`| `schema/wire.fbs`             |
 | `core/tests/generated/coprocessor_generated.rs` | `core/tests/coprocessor.fbs`, via flatc |
 | `core/tests/generated/coprocessor_rpc.rs`     | `core/tests/coprocessor.fbs`, via `tether-gen` |
+| `core/tests/generated/greeter_generated.rs`   | `cpp/test_app/greeter.fbs`, via flatc |
+| `core/tests/generated/greeter_rpc.rs`         | `cpp/test_app/greeter.fbs`, via `tether-gen` |
+| `cpp/test_app/main/generated/greeter_generated.h` | `cpp/test_app/greeter.fbs`, via flatc |
+| `cpp/test_app/main/generated/greeter_rpc.h`   | `cpp/test_app/greeter.fbs`, via `tether-gen --lang cpp` |
 | `cpp/tests/generated/coprocessor_generated.h` | `core/tests/coprocessor.fbs`, via flatc |
 | `cpp/tests/generated/coprocessor_rpc.h`       | `core/tests/coprocessor.fbs`, via `tether-gen --lang cpp` |
 

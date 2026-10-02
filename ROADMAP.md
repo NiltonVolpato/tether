@@ -74,9 +74,11 @@ schema-agnostic layer below it.
 - [x] C++ server: latest-value coalescing (`Sink::set_latest`); the waiting value lives in
       per-slot memory sized by `StaticServer`'s `MaxLatest`, and also waits for room in a full
       send queue
-- [ ] tether-gen C++ output: server table, handler interfaces, typed sinks and replies. One
-      code generation trait with an implementation per output: Rust, and C++ header and source
-      if they're generated separately (so three). `quote` would help the Rust one, but not C++
+- [x] tether-gen C++ output: a table per server, and a handler interface and service per rpc_service,
+      over typed sinks and replies; one `Backend` trait with a Rust and a C++ implementation
+      (the C++ one is a single header). Servers only; `quote` would help the Rust one, not C++
+- [ ] tether-gen C++ client (a Transport over the C++ link), for "client and server in both
+      languages" below
 - [x] Cross-language conformance: shared golden frames (`golden/frames.json`, decoded by flatc)
 - [ ] Cross-language conformance: C++ core built into the Rust simulation tests
 - [x] Integration test app (`cpp/test_app`): the C++ server on an ESP32 in QEMU, serving a

@@ -1,0 +1,41 @@
+// The integration test's service: the C++ test app serves it, and the Rust
+// tests (core/tests/qemu.rs) call it. See README.md.
+
+include "tether.fbs";
+
+namespace Test;
+
+table Empty {}
+
+table Blob {
+    data: [ubyte];
+}
+
+table Count {
+    n: ubyte;
+}
+
+table Number {
+    value: ubyte;
+}
+
+table Counters {
+    calls: uint32;
+    cancelled: uint32;
+}
+
+rpc_service Greeter {
+    /// Answers with its request.
+    Echo(Blob): Blob;
+    /// `n`, `n - 1`, ..., 1, as the client grants credit.
+    Countdown(Count): Number (streaming: "server");
+    /// How many calls the device has started, and how many were cancelled.
+    Stats(Empty): Counters;
+    /// Sets 1, 2, ..., `n` as the latest value, as fast as it can, and keeps the
+    /// channel open.
+    Burst(Count): Number (streaming: "server");
+}
+
+enum Server : ubyte (rpc_server) {
+    Greeter,
+}

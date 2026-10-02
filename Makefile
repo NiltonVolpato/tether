@@ -6,10 +6,13 @@ BUILD := build
 GEN := core/tests/generated
 CPP_GEN := cpp/tether/generated/tether
 CPP_TEST_GEN := cpp/tests/generated
+CPP_APP_GEN := cpp/test_app/main/generated
 CLANG_FORMAT := /opt/homebrew/opt/llvm@22/bin/clang-format
 
 all: core/src/wire_generated.rs $(CPP_GEN)/wire_generated.h $(GEN)/coprocessor_generated.rs $(GEN)/coprocessor_rpc.rs \
-     $(CPP_TEST_GEN)/coprocessor_generated.h $(CPP_TEST_GEN)/coprocessor_rpc.h
+     $(CPP_TEST_GEN)/coprocessor_generated.h $(CPP_TEST_GEN)/coprocessor_rpc.h \
+     $(GEN)/greeter_generated.rs $(GEN)/greeter_rpc.rs \
+     $(CPP_APP_GEN)/greeter_generated.h $(CPP_APP_GEN)/greeter_rpc.h
 
 core/src/wire_generated.rs: schema/wire.fbs schema/status.fbs
 	$(FLATC) --rust --gen-all -o core/src/ schema/wire.fbs
@@ -35,6 +38,24 @@ $(CPP_TEST_GEN)/coprocessor_generated.h: core/tests/coprocessor.fbs schema/tethe
 
 $(CPP_TEST_GEN)/coprocessor_rpc.h: core/tests/coprocessor.fbs schema/tether.fbs $(wildcard gen/src/*)
 	cargo run --offline -q -p tether-gen -- $< -I schema --lang cpp --include coprocessor_generated.h > $@.tmp
+	mv $@.tmp $@
+	$(CLANG_FORMAT) -i $@
+
+# The integration test's service: served by the C++ test app, called from Rust.
+$(GEN)/greeter_generated.rs: cpp/test_app/greeter.fbs schema/tether.fbs
+	$(FLATC) --rust --gen-object-api --gen-all -I schema -o $(GEN)/ $<
+	$(RUSTFMT) $@
+
+$(GEN)/greeter_rpc.rs: cpp/test_app/greeter.fbs schema/tether.fbs $(wildcard gen/src/*)
+	cargo run --offline -q -p tether-gen -- $< -I schema --types crate::generated::greeter_generated > $@.tmp
+	mv $@.tmp $@
+	$(RUSTFMT) $@
+
+$(CPP_APP_GEN)/greeter_generated.h: cpp/test_app/greeter.fbs schema/tether.fbs
+	$(FLATC) --cpp --cpp-std c++17 --scoped-enums --gen-all -I schema -o $(CPP_APP_GEN)/ $<
+
+$(CPP_APP_GEN)/greeter_rpc.h: cpp/test_app/greeter.fbs schema/tether.fbs $(wildcard gen/src/*)
+	cargo run --offline -q -p tether-gen -- $< -I schema --lang cpp --include greeter_generated.h > $@.tmp
 	mv $@.tmp $@
 	$(CLANG_FORMAT) -i $@
 

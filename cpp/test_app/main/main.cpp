@@ -1,9 +1,9 @@
 // The device side of tether's integration test. It serves the Rust tests in
 // core/tests/qemu.rs over UART1; UART0 is the console.
 //
-// It runs a server with the Greeter service (greeter.h) behind a router. When
-// the link ends (the host restarted, or went quiet), it starts a new one, as a
-// device would after rebooting.
+// It runs a server with the Greeter service (greeter_app.h) behind a router.
+// When the link ends (the host restarted, or went quiet), it starts a new one,
+// as a device would after rebooting.
 
 #include <algorithm>
 #include <array>
@@ -15,7 +15,7 @@
 #include "driver/uart.h"
 #include "esp_log.h"
 #include "esp_random.h"
-#include "greeter.h"
+#include "greeter_app.h"
 #include "tether/router.h"
 #include "tether/server.h"
 
@@ -79,13 +79,14 @@ struct App {
   explicit App(uint32_t boot_id)
       : server(boot_id, tether::LinkConfig{.baud_rate = kBaudRate},
                kMaxStreams),
-        router(server, greeter::kTable) {
-    router.add(greeter);
+        router(server, Test::kServer) {
+    router.add(service);
   }
 
-  tether::StaticServer<kMaxPayload, kMaxCalls, greeter::kMaxLatest> server;
-  tether::StaticRouter<greeter::kTable.size()> router;
-  greeter::Greeter greeter;
+  tether::StaticServer<kMaxPayload, kMaxCalls, greeter_app::kMaxLatest> server;
+  tether::StaticRouter<Test::kServer.size()> router;
+  greeter_app::GreeterApp greeter;
+  Test::greeter::Service service{greeter};
 };
 
 // Runs the server until its link ends.
