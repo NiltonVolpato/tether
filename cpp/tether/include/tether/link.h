@@ -208,15 +208,17 @@ struct LinkStorage {
   std::array<std::byte, QueueSize> queue_buffer{};
 };
 
+// Buffers for payloads of up to `MaxPayload` bytes. The queue holds two frames
+// that large, or many more small ones.
+template <std::size_t MaxPayload>
+using LinkStorageFor = LinkStorage<max_wire_size(MaxPayload) - 1,
+                                   2 * (max_wire_size(MaxPayload) + 2)>;
+
 }  // namespace detail
 
-// A Link with its own buffers, for payloads of up to `MaxPayload` bytes. Its
-// queue holds two frames that large, or many more small ones.
+// A Link with its own buffers, for payloads of up to `MaxPayload` bytes.
 template <std::size_t MaxPayload>
-class StaticLink
-    : private detail::LinkStorage<max_wire_size(MaxPayload) - 1,
-                                  2 * (max_wire_size(MaxPayload) + 2)>,
-      public Link {
+class StaticLink : private detail::LinkStorageFor<MaxPayload>, public Link {
  public:
   StaticLink(uint32_t boot_id, const LinkConfig& config = {})
       : Link(boot_id, config,

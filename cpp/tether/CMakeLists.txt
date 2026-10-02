@@ -3,7 +3,8 @@
 
 cmake_minimum_required(VERSION 3.22)
 
-set(TETHER_SOURCES src/cobs.cpp src/frame.cpp src/link.cpp)
+set(TETHER_SOURCES src/cobs.cpp src/frame.cpp src/link.cpp src/server.cpp
+                   src/router.cpp)
 set(TETHER_INCLUDE_DIRS include generated third_party/flatbuffers/include)
 
 if(ESP_PLATFORM)

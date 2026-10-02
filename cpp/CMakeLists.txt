@@ -8,6 +8,10 @@ set(CMAKE_OSX_SYSROOT macosx)
 project(tether_host LANGUAGES CXX)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+# No RTTI, as on the device, in the tests and GoogleTest too: a class with
+# virtual functions defined in the library has no typeinfo to give a subclass
+# that has RTTI.
+add_compile_options(-fno-rtti)
 
 add_subdirectory(tether)
 
