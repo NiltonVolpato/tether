@@ -79,6 +79,17 @@ schema-agnostic layer below it.
       (the C++ one is a single header). Servers only; `quote` would help the Rust one, not C++
 - [ ] tether-gen C++ client (a Transport over the C++ link), for "client and server in both
       languages" below
+- [ ] C++ messages built in the send queue, not in the server's scratch block. The scratch is
+      one buffer for every reply and sink, free by convention only: a build that nests another
+      send silently corrupts it, it costs a payload's worth of RAM, and a message over its size
+      aborts. Instead a bip buffer for the send path: reserve the largest contiguous free
+      region, build the flatbuffer in it (an allocator that grows the builder in place, with no
+      copy), commit the size; several messages can be waiting at once. The lease replaces the
+      lambda: `auto msg = reply.builder(); ...; reply.send(msg)`. Needs the queue to hold raw
+      header and payload, COBS-encoded as `poll_transmit` sends them (retransmits re-encode).
+      A full queue stays `QueueFull` in the sans-IO core; `tether_idf` blocks on a semaphore,
+      so handlers must run on another task than the link's I/O. A build that outgrows the
+      region still aborts: flatbuffers can't fail softly
 - [x] Cross-language conformance: shared golden frames (`golden/frames.json`, decoded by flatc)
 - [ ] Cross-language conformance: C++ core built into the Rust simulation tests
 - [x] Integration test app (`cpp/test_app`): the C++ server on an ESP32 in QEMU, serving a
