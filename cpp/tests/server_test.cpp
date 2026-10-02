@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "tether/router.h"
+#include "tether/typed.h"
 
 namespace tether {
 namespace {
@@ -26,7 +27,7 @@ using ::testing::SizeIs;
 constexpr std::size_t kMaxPayload = 256;
 constexpr std::size_t kMaxCalls = 4;
 constexpr std::size_t kMaxStreams = 2;
-constexpr std::size_t kMaxLatest = 16;
+constexpr std::size_t kMaxLatest = 32;
 
 using TestServer = StaticServer<kMaxPayload, kMaxCalls, kMaxLatest>;
 using ClientLink = StaticLink<kMaxPayload>;
@@ -127,12 +128,12 @@ class Recorder final : public Dispatcher {
   struct Call {
     MethodId method;
     std::vector<std::byte> request;
-    Reply reply;
+    RawReply reply;
   };
   struct Channel {
     MethodId method;
     std::vector<std::byte> request;
-    Sink sink;
+    RawSink sink;
   };
   struct Cancelled {
     CallId call;
@@ -142,13 +143,13 @@ class Recorder final : public Dispatcher {
   };
 
   void call(MethodId method, std::span<const std::byte> request,
-            Reply reply) override {
+            RawReply reply) override {
     calls.push_back({.method = method,
                      .request = {request.begin(), request.end()},
                      .reply = reply});
   }
   void open(MethodId method, std::span<const std::byte> request,
-            Sink sink) override {
+            RawSink sink) override {
     channels.push_back({.method = method,
                         .request = {request.begin(), request.end()},
                         .sink = sink});
@@ -194,7 +195,7 @@ TEST_F(ServerTest, UnaryCallIsDispatchedAndAnswered) {
 
 TEST_F(ServerTest, ACallIsAnsweredOnce) {
   rig.request(10, kMethod);
-  const Reply reply = recorder.calls[0].reply;
+  const RawReply reply = recorder.calls[0].reply;
   ASSERT_TRUE(reply.send({}));
   EXPECT_THAT(reply.send({}), Eq(std::unexpected(CallError::Closed)));
   EXPECT_THAT(reply.fail(WireStatus::NOT_FOUND),
@@ -220,7 +221,7 @@ TEST_F(ServerTest, FailSendsTheStatusWithoutAPayload) {
 TEST_F(ServerTest, ChannelItemsUseCredit) {
   rig.open(20, kMethod, 2, bytes({5}));
   ASSERT_THAT(recorder.channels, SizeIs(1));
-  const Sink sink = recorder.channels[0].sink;
+  const RawSink sink = recorder.channels[0].sink;
   EXPECT_THAT(recorder.channels[0].request, ElementsAre(std::byte(5)));
   EXPECT_THAT(sink.credit(), Eq(2U));
 
@@ -405,7 +406,7 @@ TEST_F(ServerTest, ALostPeerCancelsEveryOpenCall) {
 
 TEST_F(ServerTest, ABusyQueueIsBackpressure) {
   rig.open(20, kMethod, 100);
-  const Sink sink = recorder.channels[0].sink;
+  const RawSink sink = recorder.channels[0].sink;
   const std::vector<std::byte> item(kMaxPayload);
   // Nothing is pumped, so nothing is acked: the queue fills.
   int sent = 0;
@@ -439,7 +440,7 @@ std::vector<int> items(const std::vector<Received>& got) {
 
 TEST_F(ServerTest, LatestGoesAtOnceWithCredit) {
   rig.open(20, kMethod, 2);
-  const Sink sink = recorder.channels[0].sink;
+  const RawSink sink = recorder.channels[0].sink;
   ASSERT_TRUE(sink.set_latest(bytes({1})));
   ASSERT_TRUE(sink.set_latest(bytes({2})));
   EXPECT_THAT(sink.credit(), Eq(0U));
@@ -449,7 +450,7 @@ TEST_F(ServerTest, LatestGoesAtOnceWithCredit) {
 
 TEST_F(ServerTest, LatestWaitsForCreditAndReplacesWhatWaits) {
   rig.open(20, kMethod, 1);
-  const Sink sink = recorder.channels[0].sink;
+  const RawSink sink = recorder.channels[0].sink;
   for (const uint8_t v : {1, 2, 3}) {
     ASSERT_TRUE(sink.set_latest(bytes({v})));
   }
@@ -468,7 +469,7 @@ TEST_F(ServerTest, LatestWaitsForCreditAndReplacesWhatWaits) {
 
 TEST_F(ServerTest, LatestThatMustWaitHasToFitItsBuffer) {
   rig.open(20, kMethod, 1);
-  const Sink sink = recorder.channels[0].sink;
+  const RawSink sink = recorder.channels[0].sink;
   // Not waiting, so nothing to store.
   ASSERT_TRUE(sink.set_latest(std::vector<std::byte>(kMaxLatest + 100)));
   EXPECT_THAT(sink.set_latest(std::vector<std::byte>(kMaxLatest + 1)),
@@ -484,7 +485,7 @@ TEST_F(ServerTest, LatestThatMustWaitHasToFitItsBuffer) {
 
 TEST_F(ServerTest, LatestWaitsForRoomInTheSendQueue) {
   rig.open(20, kMethod, 100);
-  const Sink sink = recorder.channels[0].sink;
+  const RawSink sink = recorder.channels[0].sink;
   const std::vector<std::byte> big(kMaxPayload);
   // Full to the last small frame, not only too full for a big one.
   int sent = 0;
@@ -512,7 +513,7 @@ TEST_F(ServerTest, LatestWaitsForRoomInTheSendQueue) {
 
 TEST_F(ServerTest, EndDropsTheWaitingLatest) {
   rig.open(20, kMethod, 0);
-  const Sink sink = recorder.channels[0].sink;
+  const RawSink sink = recorder.channels[0].sink;
   ASSERT_TRUE(sink.set_latest(bytes({5})));
   ASSERT_TRUE(sink.end());
   rig.pump();
@@ -534,7 +535,7 @@ TEST_F(ServerTest, LatestOnAClosedChannelIsClosed) {
 
 TEST_F(ServerTest, ReplyTooLargeForTheQueueNeverFits) {
   rig.request(10, kMethod);
-  const Reply reply = recorder.calls[0].reply;
+  const RawReply reply = recorder.calls[0].reply;
   const std::vector<std::byte> huge(4 * kMaxPayload);
   EXPECT_THAT(reply.send(huge), Eq(std::unexpected(CallError::TooLarge)));
   // The call is still open, to answer with an error instead.
@@ -559,7 +560,12 @@ TEST(ServerQueue, RejectionsThatDontFitAreCounted) {
   alignas(8) std::array<std::byte, max_wire_size(32) - 1> rx{};
   std::array<std::byte, 2 + max_wire_size(0) + 10> tx{};
   std::array<CallSlot, 2> slots{};
-  Server server(0xB1, {}, {.receive = rx, .queue = tx}, slots, {}, 1);
+  Server server(0xB1, {},
+                {.link = {.receive = rx, .queue = tx},
+                 .slots = slots,
+                 .latest = {},
+                 .scratch = {}},
+                1);
   ClientLink client(0xA1);
   const Millis now{0};
   while (server.link().state() != LinkState::Linked) {
@@ -590,13 +596,13 @@ class FakeService final : public Service {
 
   [[nodiscard]] uint8_t id() const override { return id_; }
   void call(uint8_t method, std::span<const std::byte> request,
-            Reply reply) override {
+            RawReply reply) override {
     calls.push_back({.method = method,
                      .request = {request.begin(), request.end()},
                      .reply = reply});
   }
   void open(uint8_t method, std::span<const std::byte> request,
-            Sink sink) override {
+            RawSink sink) override {
     channels.push_back({.method = method,
                         .request = {request.begin(), request.end()},
                         .sink = sink});
@@ -606,12 +612,12 @@ class FakeService final : public Service {
   struct Call {
     uint8_t method;
     std::vector<std::byte> request;
-    Reply reply;
+    RawReply reply;
   };
   struct Channel {
     uint8_t method;
     std::vector<std::byte> request;
-    Sink sink;
+    RawSink sink;
   };
 
   std::vector<Call> calls;
@@ -730,6 +736,81 @@ TEST_F(RouterTest, ALostLinkCancelsThroughTheRouter) {
   rig.server.receive(*hello, rig.now);
   EXPECT_THAT(greeter.cancellations, ElementsAre(CallId{1}));
   EXPECT_THAT(other.cancellations, ElementsAre(CallId{2}));
+}
+
+// Typed messages, with the framework's own Hello table as the message.
+auto hello(uint32_t boot_id, uint32_t peer_boot_id) {
+  return [=](flatbuffers::FlatBufferBuilder& fbb) {
+    return wire::CreateHello(fbb, boot_id, peer_boot_id);
+  };
+}
+
+const wire::Hello* as_hello(const std::vector<std::byte>& payload) {
+  return verify<wire::Hello>(payload);
+}
+
+TEST(Typed, VerifyReadsAMessageInPlaceOrRefusesIt) {
+  alignas(8) std::array<std::byte, 64> storage{};
+  flatbuffers::FlatBufferBuilder fbb;
+  fbb.Finish(wire::CreateHello(fbb, 7, 9));
+  std::ranges::copy(
+      std::as_bytes(std::span(fbb.GetBufferPointer(), fbb.GetSize())),
+      storage.begin());
+  const auto message = std::span<const std::byte>(storage).first(fbb.GetSize());
+
+  const auto* got = verify<wire::Hello>(message);
+  ASSERT_NE(got, nullptr);
+  EXPECT_THAT(got->boot_id(), Eq(7U));
+  EXPECT_THAT(got->peer_boot_id(), Eq(9U));
+  // In place: the table is in the buffer, not a copy.
+  const auto* at = reinterpret_cast<const std::byte*>(got);
+  EXPECT_TRUE(at >= message.data() && at < message.data() + message.size());
+  EXPECT_EQ(verify<wire::Hello>(message.first(message.size() - 1)), nullptr);
+  EXPECT_EQ(verify<wire::Hello>({}), nullptr);
+  EXPECT_EQ(verify<wire::Hello>(std::span<const std::byte>(storage).first(8)),
+            nullptr);
+}
+
+TEST_F(ServerTest, TypedReplyBuildsItsMessage) {
+  rig.request(10, kMethod);
+  const Reply<wire::Hello> reply(recorder.calls[0].reply);
+  EXPECT_THAT(reply.call_id(), Eq(CallId{10}));
+  ASSERT_TRUE(reply.send(hello(1, 2)));
+  rig.pump();
+  const auto got = rig.take();
+  ASSERT_THAT(got, SizeIs(1));
+  const auto* message = as_hello(got[0].payload);
+  ASSERT_NE(message, nullptr);
+  EXPECT_THAT(message->boot_id(), Eq(1U));
+  EXPECT_THAT(message->peer_boot_id(), Eq(2U));
+  EXPECT_THAT(reply.fail(WireStatus::NOT_FOUND),
+              Eq(std::unexpected(CallError::Closed)));
+}
+
+TEST_F(ServerTest, TypedSinkBuildsItemsAndLatestValues) {
+  rig.open(20, kMethod, 1);
+  const Sink<wire::Hello> sink(recorder.channels[0].sink);
+  ASSERT_TRUE(sink.send(hello(1, 0)));
+  EXPECT_THAT(sink.send(hello(2, 0)), Eq(std::unexpected(CallError::NoCredit)));
+  ASSERT_TRUE(sink.set_latest(hello(3, 0)));
+  ASSERT_TRUE(sink.set_latest(hello(4, 0)));
+  rig.pump();
+  rig.grant(20, 1);
+  const auto got = rig.take();
+  ASSERT_THAT(got, SizeIs(2));
+  EXPECT_THAT(as_hello(got[0].payload)->boot_id(), Eq(1U));
+  EXPECT_THAT(as_hello(got[1].payload)->boot_id(), Eq(4U));
+  ASSERT_TRUE(sink.end(WireStatus::ABORTED));
+}
+
+TEST_F(ServerTest, ABuiltMessageBiggerThanAnyPayloadAborts) {
+  rig.request(10, kMethod);
+  const Reply<wire::Credits> reply(recorder.calls[0].reply);
+  const std::vector<wire::Grant> grants(kMaxPayload);
+  EXPECT_DEATH((void)reply.send([&](flatbuffers::FlatBufferBuilder& fbb) {
+    return wire::CreateCreditsDirect(fbb, &grants);
+  }),
+               "");
 }
 
 TEST(RouterDeathTest, WiringMistakesAbortAtStartup) {

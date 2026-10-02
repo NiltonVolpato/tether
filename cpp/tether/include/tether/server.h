@@ -2,9 +2,9 @@
 // (core/src/server.rs), over a Link.
 //
 // Calls are addressed by call id. A request or an open goes to the Dispatcher
-// (see router.h) with a Reply or a Sink that answers it, and those can be kept
-// for as long as the call lasts. The server tracks open calls in a fixed table,
-// so a call that finds it full is rejected with RESOURCE_EXHAUSTED.
+// (see router.h) with a RawReply or a RawSink that answers it, and those can be
+// kept for as long as the call lasts. The server tracks open calls in a fixed
+// table, so a call that finds it full is rejected with RESOURCE_EXHAUSTED.
 //
 // Sans-IO, like the link: feed received bytes in, write out what
 // poll_transmit returns, and call again at next_deadline. Everything here,
@@ -41,9 +41,13 @@ class Server;
 
 // Answers one unary call, at most once. A cheap handle: copies answer the same
 // call, and only the first answer is sent.
-class Reply {
+class RawReply {
  public:
   [[nodiscard]] CallId call_id() const { return CallId{call_}; }
+
+  // Memory to build a message in, for as long as nothing else on the server
+  // uses it (see typed.h): the size of the largest payload.
+  [[nodiscard]] std::span<std::byte> scratch() const;
 
   // `Closed` if the client cancelled meanwhile. `QueueFull` leaves the call
   // open, to answer again later.
@@ -55,16 +59,19 @@ class Reply {
 
  private:
   friend class Server;
-  Reply(Server& server, uint32_t call) : server_(&server), call_(call) {}
+  RawReply(Server& server, uint32_t call) : server_(&server), call_(call) {}
 
   Server* server_;
   uint32_t call_;
 };
 
-// The server's end of one channel. A cheap handle, like Reply.
-class Sink {
+// The server's end of one channel. A cheap handle, like RawReply.
+class RawSink {
  public:
   [[nodiscard]] CallId call_id() const { return CallId{call_}; }
+
+  // As RawReply::scratch.
+  [[nodiscard]] std::span<std::byte> scratch() const;
 
   // Uses one credit; `NoCredit` until the client consumes earlier items.
   [[nodiscard]] std::expected<void, CallError> send(
@@ -85,7 +92,7 @@ class Sink {
 
  private:
   friend class Server;
-  Sink(Server& server, uint32_t call) : server_(&server), call_(call) {}
+  RawSink(Server& server, uint32_t call) : server_(&server), call_(call) {}
 
   Server* server_;
   uint32_t call_;
@@ -96,9 +103,9 @@ class Dispatcher {
  public:
   // The request is valid during the call only: copy what's needed later.
   virtual void call(MethodId method, std::span<const std::byte> request,
-                    Reply reply) = 0;
+                    RawReply reply) = 0;
   virtual void open(MethodId method, std::span<const std::byte> request,
-                    Sink sink) = 0;
+                    RawSink sink) = 0;
   // The client dropped `call`, or the link went down, before it finished: stop
   // working on it (e.g. unsubscribe). Replies and sinks of `call` are closed.
   virtual void cancelled(CallId call, MethodId method) = 0;
@@ -116,7 +123,7 @@ struct CallSlot {
   MethodId method;
   // Items the client has room for, on a channel.
   uint16_t credit = 0;
-  // A value waiting for credit or queue room (see Sink::set_latest), in this
+  // A value waiting for credit or queue room (see RawSink::set_latest), in this
   // slot's part of the server's latest-value memory.
   bool has_latest = false;
   uint16_t latest_size = 0;
@@ -129,13 +136,21 @@ struct ServerStats {
   uint32_t lost_rejections = 0;
 };
 
+// The memory a Server works in. See StaticServer for a Server with its own.
+struct ServerBuffers {
+  LinkBuffers link;
+  // A call per slot.
+  std::span<CallSlot> slots;
+  // Shared equally by the slots, for values waiting in RawSink::set_latest.
+  std::span<std::byte> latest;
+  // For building messages in: 8-aligned, and as large as the largest payload.
+  std::span<std::byte> scratch;
+};
+
 class Server {
  public:
-  // At most `max_streams` channels are open at once, and a call per slot.
-  // `latest` is shared equally by the slots, for values waiting in
-  // Sink::set_latest.
-  Server(uint32_t boot_id, const LinkConfig& config, LinkBuffers buffers,
-         std::span<CallSlot> slots, std::span<std::byte> latest,
+  // At most `max_streams` channels are open at once.
+  Server(uint32_t boot_id, const LinkConfig& config, ServerBuffers buffers,
          std::size_t max_streams);
   Server(const Server&) = delete;
   Server& operator=(const Server&) = delete;
@@ -161,8 +176,8 @@ class Server {
   }
 
  private:
-  friend class Reply;
-  friend class Sink;
+  friend class RawReply;
+  friend class RawSink;
 
   CallSlot* find(uint32_t call);
   CallSlot* find(uint32_t call, CallSlot::State state);
@@ -196,6 +211,7 @@ class Server {
   Link link_;
   std::span<CallSlot> slots_;
   std::span<std::byte> latest_;
+  std::span<std::byte> scratch_;
   std::size_t max_streams_;
   Dispatcher* dispatcher_ = nullptr;
   ServerStats stats_{};
@@ -203,10 +219,11 @@ class Server {
 
 namespace detail {
 
-template <std::size_t Slots, std::size_t Latest>
+template <std::size_t Slots, std::size_t Latest, std::size_t Scratch>
 struct CallStorage {
   std::array<CallSlot, Slots> slots{};
   std::array<std::byte, Slots * Latest> latest{};
+  alignas(8) std::array<std::byte, (Scratch + 7) / 8 * 8> scratch{};
 };
 
 }  // namespace detail
@@ -216,15 +233,20 @@ struct CallStorage {
 // `MaxLatest` bytes waiting (none by default): that much for every call slot.
 template <std::size_t MaxPayload, std::size_t MaxCalls,
           std::size_t MaxLatest = 0>
-class StaticServer : private detail::LinkStorageFor<MaxPayload>,
-                     private detail::CallStorage<MaxCalls, MaxLatest>,
-                     public Server {
+class StaticServer
+    : private detail::LinkStorageFor<MaxPayload>,
+      private detail::CallStorage<MaxCalls, MaxLatest, MaxPayload>,
+      public Server {
  public:
   explicit StaticServer(uint32_t boot_id, const LinkConfig& config = {},
                         std::size_t max_streams = MaxCalls)
       : Server(boot_id, config,
-               {.receive = this->receive_buffer, .queue = this->queue_buffer},
-               this->slots, this->latest, max_streams) {}
+               {.link = {.receive = this->receive_buffer,
+                         .queue = this->queue_buffer},
+                .slots = this->slots,
+                .latest = this->latest,
+                .scratch = this->scratch},
+               max_streams) {}
 };
 
 }  // namespace tether

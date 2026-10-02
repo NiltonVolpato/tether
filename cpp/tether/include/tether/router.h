@@ -25,9 +25,9 @@ class Service {
   // `method` is the method's number in the service. The request is valid
   // during the call only, and not verified yet.
   virtual void call(uint8_t method, std::span<const std::byte> request,
-                    Reply reply) = 0;
+                    RawReply reply) = 0;
   virtual void open(uint8_t method, std::span<const std::byte> request,
-                    Sink sink) = 0;
+                    RawSink sink) = 0;
   // The client dropped `call` before it finished.
   virtual void cancelled(CallId call) = 0;
 
@@ -50,9 +50,9 @@ class Router : public Dispatcher {
   void add(Service& service);
 
   void call(MethodId method, std::span<const std::byte> request,
-            Reply reply) override;
+            RawReply reply) override;
   void open(MethodId method, std::span<const std::byte> request,
-            Sink sink) override;
+            RawSink sink) override;
   void cancelled(CallId call, MethodId method) override;
 
  private:

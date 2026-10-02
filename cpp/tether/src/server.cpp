@@ -9,40 +9,44 @@ using State = CallSlot::State;
 
 }  // namespace
 
-std::expected<void, CallError> Reply::send(
+std::span<std::byte> RawReply::scratch() const { return server_->scratch_; }
+
+std::expected<void, CallError> RawReply::send(
     std::span<const std::byte> response) const {
   return server_->respond(call_, WireStatus::OK, response);
 }
 
-std::expected<void, CallError> Reply::fail(WireStatus status) const {
+std::expected<void, CallError> RawReply::fail(WireStatus status) const {
   if (status == WireStatus::OK) {
     status = WireStatus::INTERNAL;
   }
   return server_->respond(call_, status, {});
 }
 
-std::expected<void, CallError> Sink::send(
+std::span<std::byte> RawSink::scratch() const { return server_->scratch_; }
+
+std::expected<void, CallError> RawSink::send(
     std::span<const std::byte> item) const {
   return server_->send_item(call_, item);
 }
 
-std::expected<void, CallError> Sink::set_latest(
+std::expected<void, CallError> RawSink::set_latest(
     std::span<const std::byte> item) const {
   return server_->set_latest(call_, item);
 }
 
-uint16_t Sink::credit() const { return server_->credit(call_); }
+uint16_t RawSink::credit() const { return server_->credit(call_); }
 
-std::expected<void, CallError> Sink::end(WireStatus status) const {
+std::expected<void, CallError> RawSink::end(WireStatus status) const {
   return server_->end_stream(call_, status);
 }
 
-Server::Server(uint32_t boot_id, const LinkConfig& config, LinkBuffers buffers,
-               std::span<CallSlot> slots, std::span<std::byte> latest,
-               std::size_t max_streams)
-    : link_(boot_id, config, buffers),
-      slots_(slots),
-      latest_(latest),
+Server::Server(uint32_t boot_id, const LinkConfig& config,
+               ServerBuffers buffers, std::size_t max_streams)
+    : link_(boot_id, config, buffers.link),
+      slots_(buffers.slots),
+      latest_(buffers.latest),
+      scratch_(buffers.scratch),
       max_streams_(max_streams) {}
 
 std::size_t Server::open_calls() const {
@@ -123,9 +127,9 @@ void Server::begin(const Header& header, std::span<const std::byte> payload,
            .method = method,
            .credit = streaming ? header.credit : uint16_t{0}};
   if (streaming) {
-    dispatcher_->open(method, payload, Sink(*this, header.call_id));
+    dispatcher_->open(method, payload, RawSink(*this, header.call_id));
   } else {
-    dispatcher_->call(method, payload, Reply(*this, header.call_id));
+    dispatcher_->call(method, payload, RawReply(*this, header.call_id));
   }
 }
 

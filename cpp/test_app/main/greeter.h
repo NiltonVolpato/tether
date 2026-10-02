@@ -48,7 +48,7 @@ class Greeter final : public tether::Service {
   [[nodiscard]] uint8_t id() const override { return kId; }
 
   void call(uint8_t method, std::span<const std::byte> request,
-            tether::Reply reply) override {
+            tether::RawReply reply) override {
     ++calls_;
     switch (method) {
       case kEcho:
@@ -64,7 +64,7 @@ class Greeter final : public tether::Service {
   }
 
   void open(uint8_t method, std::span<const std::byte> request,
-            tether::Sink sink) override {
+            tether::RawSink sink) override {
     ++calls_;
     if (method != kCountdown && method != kBurst) {
       (void)sink.end(tether::WireStatus::UNIMPLEMENTED);
@@ -121,12 +121,12 @@ class Greeter final : public tether::Service {
 
  private:
   struct Countdown {
-    tether::Sink sink;
+    tether::RawSink sink;
     // The next item, and how many are left.
     uint8_t next;
   };
 
-  void stats(tether::Reply reply) const {
+  void stats(tether::RawReply reply) const {
     std::array<std::byte, 8> out{};
     for (int i = 0; i < 4; ++i) {
       out[i] = std::byte(calls_ >> (8 * i));

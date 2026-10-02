@@ -29,7 +29,7 @@ Service* Router::route(MethodId method, bool streaming) const {
 }
 
 void Router::call(MethodId method, std::span<const std::byte> request,
-                  Reply reply) {
+                  RawReply reply) {
   if (Service* service = route(method, false)) {
     service->call(method.method, request, reply);
     return;
@@ -39,7 +39,7 @@ void Router::call(MethodId method, std::span<const std::byte> request,
 }
 
 void Router::open(MethodId method, std::span<const std::byte> request,
-                  Sink sink) {
+                  RawSink sink) {
   if (Service* service = route(method, true)) {
     service->open(method.method, request, sink);
     return;

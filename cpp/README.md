@@ -7,8 +7,8 @@ the Rust client.
 
 - `Link`: reliable, in-order frames over the UART.
 - `Server`: open calls in a fixed table; hands each request to a `Dispatcher`
-  with a `Reply` or a `Sink` to answer it, which are cheap handles to keep. A
-  full send queue shows up as `CallError::QueueFull`, to retry. `Sink::set_latest`
+  with a `RawReply` or a `RawSink` to answer it, which are cheap handles to keep. A
+  full send queue shows up as `CallError::QueueFull`, to retry. `RawSink::set_latest`
   keeps only the newest value for a slow client, in memory `StaticServer` sizes.
 - `Router`: the `Dispatcher` that sends each call to the `Service` that owns
   its method, from the server's table (`descriptor.h`), and answers the rest
