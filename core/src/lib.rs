@@ -2,8 +2,10 @@
 //! link: no UART, no executor, no clock. Callers feed received bytes in,
 //! pull bytes to transmit out, and pass the current time in milliseconds.
 //!
-//! Shared state uses `RefCell` for now: the client and the server each
-//! assume everything that touches them runs on one executor.
+//! Shared state uses `RefCell` and `Cell`: the client and the server each
+//! assume everything that touches them, their I/O task and the apps, runs on
+//! one executor. The I/O task sleeps until `next_deadline` or until it's
+//! notified (`notify`), so it never polls.
 
 #![no_std]
 
@@ -12,6 +14,7 @@ extern crate alloc;
 pub mod client;
 pub mod frame;
 pub mod link;
+pub mod notify;
 pub mod router;
 pub mod server;
 

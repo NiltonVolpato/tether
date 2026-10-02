@@ -12,6 +12,7 @@ use tether::{MethodId, RawCall, RawChannel, Status, Transport};
 
 use crate::frame::{Frame, Header};
 use crate::link::{Link, LinkConfig, LinkState, LinkStats};
+use crate::notify::SharedNotify;
 use crate::tether_status;
 use crate::wire::{Credits, CreditsArgs, Grant, Kind};
 
@@ -33,12 +34,24 @@ fn wake(slot: &mut Slot) {
 /// Receiving end of a server-streaming call. Dropping it cancels the call.
 pub struct Channel {
     slot: SlotRef,
+    io: SharedNotify,
 }
 
 impl Channel {
     /// An item if one is waiting.
     pub fn try_recv(&self) -> Option<Vec<u8>> {
-        self.slot.borrow_mut().items.pop_front()
+        let item = self.slot.borrow_mut().items.pop_front();
+        if item.is_some() {
+            // The slot it freed goes back to the server as credit.
+            self.io.notify();
+        }
+        item
+    }
+}
+
+impl Drop for Channel {
+    fn drop(&mut self) {
+        self.io.notify();
     }
 }
 
@@ -66,6 +79,13 @@ impl RawChannel for Channel {
 /// A pending unary call. Dropping it before the response cancels the call.
 pub struct Call {
     slot: SlotRef,
+    io: SharedNotify,
+}
+
+impl Drop for Call {
+    fn drop(&mut self) {
+        self.io.notify();
+    }
 }
 
 impl Call {
@@ -117,6 +137,7 @@ pub struct Client {
     next_call_id: u32,
     stats: ClientStats,
     now: u64,
+    io: SharedNotify,
 }
 
 impl Client {
@@ -127,7 +148,23 @@ impl Client {
             next_call_id: 1,
             stats: ClientStats::default(),
             now: 0,
+            io: SharedNotify::default(),
         }
+    }
+
+    /// Notified when the app does something that needs the I/O task: starts a
+    /// call, consumes an item, or drops a call.
+    pub fn io(&self) -> SharedNotify {
+        self.io.clone()
+    }
+
+    /// When `poll_transmit` next has something to do, unless something arrives
+    /// or the app notifies `io` first: the link's next deadline, or a call's.
+    /// Nothing once the link is terminal.
+    pub fn next_deadline(&self) -> Option<u64> {
+        let link = self.link.next_deadline()?;
+        let call = self.calls.values().filter_map(|e| e.deadline).min();
+        Some(call.map_or(link, |c| c.min(link)))
     }
 
     pub fn link_state(&self) -> LinkState {
@@ -152,13 +189,19 @@ impl Client {
     /// `timeout_ms`, counted from the last `poll_transmit` time.
     pub fn call(&mut self, method: MethodId, payload: Vec<u8>, timeout_ms: u64) -> Call {
         let deadline = Some(self.now + timeout_ms);
-        Call { slot: self.start(Kind::Request, method, payload, 1, deadline) }
+        Call {
+            slot: self.start(Kind::Request, method, payload, 1, deadline),
+            io: self.io.clone(),
+        }
     }
 
     /// Opens a server-streaming channel buffering up to `capacity` items.
     pub fn open(&mut self, method: MethodId, payload: Vec<u8>, capacity: u16) -> Channel {
         assert!(capacity > 0);
-        Channel { slot: self.start(Kind::Open, method, payload, capacity, None) }
+        Channel {
+            slot: self.start(Kind::Open, method, payload, capacity, None),
+            io: self.io.clone(),
+        }
     }
 
     fn start(
@@ -191,6 +234,7 @@ impl Client {
         let header = Header { call_id, service, method, credit, ..Header::new(kind) };
         self.link.send(header, payload);
         self.stats.calls += 1;
+        self.io.notify();
         slot
     }
 

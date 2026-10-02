@@ -79,6 +79,11 @@ impl Pipe {
         self.in_flight.push_back((now + latency, bytes));
     }
 
+    /// When the next bytes arrive.
+    pub fn next_arrival(&self) -> Option<u64> {
+        self.in_flight.front().map(|(t, _)| *t)
+    }
+
     /// Bytes due at `now`, in arbitrary read-sized chunks.
     pub fn deliver(&mut self, now: u64) -> Vec<Vec<u8>> {
         let mut bytes = Vec::new();

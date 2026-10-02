@@ -109,6 +109,8 @@ pub struct Link {
     ack_due: Option<u16>,
     hello_reply_due: bool,
     last_hello_at: Option<u64>,
+    /// The time of the latest `poll_transmit`.
+    now: u64,
     // RX
     /// A valid frame arrived since the last `poll_transmit`, which has the time.
     heard: bool,
@@ -141,6 +143,7 @@ impl Link {
             ack_due: None,
             hello_reply_due: false,
             last_hello_at: None,
+            now: 0,
             heard: false,
             last_heard_at: 0,
             expected_seq: 1,
@@ -182,9 +185,30 @@ impl Link {
 
     /// Next bytes to write to the UART, if any are due at `now`.
     pub fn poll_transmit(&mut self, now: u64) -> Option<Vec<u8>> {
+        self.now = now;
         let wire = self.next_transmit(now)?;
         self.stats.frames_tx += 1;
         Some(wire)
+    }
+
+    /// When `poll_transmit` next has something to send, unless something
+    /// arrives first: the time of the last poll if it already does. Nothing
+    /// once the link is terminal.
+    pub fn next_deadline(&self) -> Option<u64> {
+        if self.state.is_terminal() {
+            return None;
+        }
+        if self.heard || self.ack_due.is_some() || self.hello_reply_due {
+            return Some(self.now);
+        }
+        Some(match (&self.state, &self.in_flight) {
+            (LinkState::Connecting, _) => {
+                self.last_hello_at.map_or(self.now, |t| t + self.cfg.hello_interval_ms)
+            }
+            (_, Some(f)) => f.sent_at + f.timeout,
+            (_, None) if !self.queue.is_empty() => self.now,
+            (_, None) => self.last_heard_at + self.cfg.ping_interval_ms,
+        })
     }
 
     fn next_transmit(&mut self, now: u64) -> Option<Vec<u8>> {

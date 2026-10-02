@@ -10,6 +10,7 @@ use tether::{CallId, MethodId, RawReply, RawSink, ServerTypes, Status, StreamErr
 
 use crate::frame::{Frame, Header};
 use crate::link::{Link, LinkConfig, LinkState, LinkStats};
+use crate::notify::SharedNotify;
 use crate::wire::{Credits, Kind};
 use crate::wire_status;
 
@@ -43,6 +44,7 @@ pub struct Server {
     max_streams: usize,
     calls: BTreeMap<u32, Option<Stream>>,
     events: VecDeque<ServerEvent>,
+    io: SharedNotify,
 }
 
 /// The server as the router, replies and sinks share it. Everything that
@@ -56,7 +58,19 @@ impl Server {
             max_streams,
             calls: BTreeMap::new(),
             events: VecDeque::new(),
+            io: SharedNotify::default(),
         }
+    }
+
+    /// Notified when a reply or an item is queued, for the I/O task.
+    pub fn io(&self) -> SharedNotify {
+        self.io.clone()
+    }
+
+    /// When `poll_transmit` next has something to do, unless something arrives
+    /// or `io` is notified first. Nothing once the link is terminal.
+    pub fn next_deadline(&self) -> Option<u64> {
+        self.link.next_deadline()
     }
 
     pub fn shared(self) -> SharedServer {
@@ -114,6 +128,7 @@ impl Server {
         };
         self.link
             .send(Header { call_id, status, ..Header::new(Kind::Response) }, payload);
+        self.io.notify();
     }
 
     pub fn send(&mut self, call_id: u32, payload: Vec<u8>) -> Result<(), StreamError> {
@@ -123,6 +138,7 @@ impl Server {
         }
         stream.credit -= 1;
         self.link.send(Header { call_id, ..Header::new(Kind::Item) }, payload);
+        self.io.notify();
         Ok(())
     }
 
@@ -142,6 +158,7 @@ impl Server {
         self.calls.remove(&call_id);
         let header = Header { call_id, status: wire_status(result), ..Header::new(Kind::End) };
         self.link.send(header, Vec::new());
+        self.io.notify();
         Ok(())
     }
 

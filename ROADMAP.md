@@ -43,7 +43,11 @@ schema-agnostic layer below it.
 
 ## Core (`tether-core` crate)
 
-- [ ] Choose the interior mutability behind `SharedClient` and `SharedServer` (a `RefCell` for now, i.e. one executor; depends on the S3 task/executor layout)
+- [x] Interior mutability behind `SharedClient` and `SharedServer`: `RefCell` and `Cell`, so
+      everything that touches them (the I/O tasks and the apps) runs on one executor
+- [x] `next_deadline` on the Rust link, client and server, so an I/O task sleeps until it's due
+      instead of polling; `Notify` (a flag and a `Waker`, no executor) wakes it when an app starts
+      a call, sends a reply or item, consumes an item or drops a call
 - [x] Liveness: ping and a retransmit limit, so a dead peer is detected (replaces Heartbeat)
 - [x] Retransmit timeout sized to the frame: base + (frame + peer's largest frame) at the baud
       rate; a fixed 20 ms collapsed the link with ~1 KB frames at 921600 (found in QEMU)
@@ -97,7 +101,9 @@ schema-agnostic layer below it.
 
 ## Integration
 
-- [ ] S3: embassy UART glue and task layout; wake the I/O task when an app consumes or drops
+- [ ] `tether-embassy` crate: the client's and the server's I/O tasks over `embedded-io-async` and
+      `embassy-time`, one executor; tested on the host, end to end over lossy in-memory pipes
+- [ ] S3: task layout, and the esp-hal UART setup for those tasks (in smart-dial)
 - [ ] `tether_idf` component: the FreeRTOS task glue, blocking on a queue set of the UART
       driver's event queue and a wake semaphore, with the link's next deadline as the timeout.
       Acks stay in that task (high priority); ack from the UART ISR only if measured ack latency
