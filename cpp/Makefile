@@ -40,7 +40,7 @@ $(TIDY_STAMP): $(SRCS) | $(NINJA)
 		-quiet \
 		-hide-progress \
 		-source-filter '.*/cpp/(tether/src|tests)/.*' \
-		-header-filter '.*/cpp/(tether/include|tether/src|tests)/.*\.h$$'
+		-header-filter '.*/cpp/(tether/(include|src)/.*|tests/([^/]*|generated/.*_rpc))\.h$$'
 	@touch $(TIDY_STAMP)
 
 fmt: $(FMT_STAMP)

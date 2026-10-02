@@ -1,3 +1,4 @@
 Checks: 'modernize*,-modernize-use-trailing-return-type'
-HeaderFilterRegex: '.*/cpp/(tether/include|tether/src|tests)/.*\.h$'
+# Ours, not flatc's output (tests/generated/*_generated.h).
+HeaderFilterRegex: '.*/cpp/(tether/(include|src)/.*|tests/([^/]*|generated/.*_rpc))\.h$'
 WarningsAsErrors: ''

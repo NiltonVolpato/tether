@@ -6,7 +6,7 @@
 |------------------|--------------------------------------------------------------|
 | `tether/`        | `tether`: the API (traits and data objects) apps depend on   |
 | `core/`          | `tether-core`: the sans-IO Rust core (framing, link, client, server) |
-| `gen/`           | `tether-gen`: generates typed clients and services from a schema |
+| `gen/`           | `tether-gen`: generates typed clients and services (Rust), and servers (C++), from a schema |
 | `gen/flatbuffers/` | flatbuffers v25.12.19 (a submodule), whose schema parser `tether-gen` links |
 | `schema/`        | `wire.fbs` (the wire format) and `tether.fbs` (attributes apps include) |
 | `golden/`        | Golden frames: the wire format as bytes, shared by both cores |
@@ -85,6 +85,8 @@ make            # regenerates what's out of date
 | `cpp/tether/generated/tether/wire_generated.h`| `schema/wire.fbs`             |
 | `core/tests/generated/coprocessor_generated.rs` | `core/tests/coprocessor.fbs`, via flatc |
 | `core/tests/generated/coprocessor_rpc.rs`     | `core/tests/coprocessor.fbs`, via `tether-gen` |
+| `cpp/tests/generated/coprocessor_generated.h` | `core/tests/coprocessor.fbs`, via flatc |
+| `cpp/tests/generated/coprocessor_rpc.h`       | `core/tests/coprocessor.fbs`, via `tether-gen --lang cpp` |
 
 ### Golden frames
 
