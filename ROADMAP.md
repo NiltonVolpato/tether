@@ -101,8 +101,9 @@ schema-agnostic layer below it.
 
 ## Integration
 
-- [ ] `tether-embassy` crate: the client's and the server's I/O tasks over `embedded-io-async` and
-      `embassy-time`, one executor; tested on the host, end to end over lossy in-memory pipes
+- [x] `tether-embassy` crate: the client's and the server's I/O tasks over `embedded-io-async` and
+      `embassy-time`, one executor; tested on the host, end to end over lossy in-memory pipes on
+      embassy's mock clock (it also builds for `thumbv7em-none-eabihf` and `riscv32imac`)
 - [ ] S3: task layout, and the esp-hal UART setup for those tasks (in smart-dial)
 - [ ] `tether_idf` component: the FreeRTOS task glue, blocking on a queue set of the UART
       driver's event queue and a wake semaphore, with the link's next deadline as the timeout.

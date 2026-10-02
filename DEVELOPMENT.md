@@ -6,6 +6,7 @@
 |------------------|--------------------------------------------------------------|
 | `tether/`        | `tether`: the API (traits and data objects) apps depend on   |
 | `core/`          | `tether-core`: the sans-IO Rust core (framing, link, client, server) |
+| `embassy/`       | `tether-embassy`: the client's and server's I/O tasks over embedded-io-async and embassy-time |
 | `gen/`           | `tether-gen`: generates typed clients and services (Rust), and servers (C++), from a schema |
 | `gen/flatbuffers/` | flatbuffers v25.12.19 (a submodule), whose schema parser `tether-gen` links |
 | `schema/`        | `wire.fbs` (the wire format) and `tether.fbs` (attributes apps include) |
