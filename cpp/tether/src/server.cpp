@@ -26,6 +26,11 @@ std::expected<void, CallError> Sink::send(
   return server_->send_item(call_, item);
 }
 
+std::expected<void, CallError> Sink::set_latest(
+    std::span<const std::byte> item) const {
+  return server_->set_latest(call_, item);
+}
+
 uint16_t Sink::credit() const { return server_->credit(call_); }
 
 std::expected<void, CallError> Sink::end(WireStatus status) const {
@@ -33,9 +38,11 @@ std::expected<void, CallError> Sink::end(WireStatus status) const {
 }
 
 Server::Server(uint32_t boot_id, const LinkConfig& config, LinkBuffers buffers,
-               std::span<CallSlot> slots, std::size_t max_streams)
+               std::span<CallSlot> slots, std::span<std::byte> latest,
+               std::size_t max_streams)
     : link_(boot_id, config, buffers),
       slots_(slots),
+      latest_(latest),
       max_streams_(max_streams) {}
 
 std::size_t Server::open_calls() const {
@@ -45,6 +52,10 @@ std::size_t Server::open_calls() const {
 
 void Server::receive(std::span<const std::byte> bytes, Millis now) {
   link_.receive(bytes, now, [this](const Frame& frame) { dispatch(frame); });
+  // The acks in `bytes` may have made room in the send queue.
+  for (CallSlot& slot : slots_) {
+    flush_latest(slot);
+  }
   check_link();
 }
 
@@ -133,6 +144,7 @@ void Server::grant(std::span<const std::byte> payload) {
     if (CallSlot* slot = find(grant->call_id(), State::Stream)) {
       slot->credit = static_cast<uint16_t>(
           std::min<uint32_t>(slot->credit + grant->credit(), UINT16_MAX));
+      flush_latest(*slot);
     }
   }
 }
@@ -217,6 +229,36 @@ std::expected<void, CallError> Server::send_item(
   return sent;
 }
 
+std::expected<void, CallError> Server::set_latest(
+    uint32_t call, std::span<const std::byte> item) {
+  CallSlot* slot = find(call, State::Stream);
+  if (slot == nullptr) {
+    return std::unexpected(CallError::Closed);
+  }
+  const std::span<std::byte> buffer = latest_buffer(*slot);
+  if (slot->credit > 0) {
+    const auto sent = queue({.kind = Kind::Item, .call_id = call}, item);
+    if (sent) {
+      --slot->credit;
+      slot->has_latest = false;  // Older than what just went out.
+      return {};
+    }
+    if (sent.error() == CallError::TooLarge) {
+      return sent;
+    }
+    // The queue is full: it goes out when there's room, if it can wait.
+    if (item.size() > buffer.size()) {
+      return sent;
+    }
+  } else if (item.size() > buffer.size()) {
+    return std::unexpected(CallError::TooLarge);
+  }
+  std::ranges::copy(item, buffer.begin());
+  slot->latest_size = static_cast<uint16_t>(item.size());
+  slot->has_latest = true;
+  return {};
+}
+
 std::expected<void, CallError> Server::end_stream(uint32_t call,
                                                   WireStatus status) {
   CallSlot* slot = find(call, State::Stream);
@@ -229,6 +271,26 @@ std::expected<void, CallError> Server::end_stream(uint32_t call,
     *slot = {};
   }
   return sent;
+}
+
+void Server::flush_latest(CallSlot& slot) {
+  if (slot.state != State::Stream || !slot.has_latest || slot.credit == 0) {
+    return;
+  }
+  const auto value = latest_buffer(slot).first(slot.latest_size);
+  if (queue({.kind = Kind::Item, .call_id = slot.call_id}, value)) {
+    --slot.credit;
+    slot.has_latest = false;
+  }
+}
+
+std::span<std::byte> Server::latest_buffer(const CallSlot& slot) const {
+  if (slots_.empty()) {
+    return {};
+  }
+  const std::size_t size =
+      std::min<std::size_t>(latest_.size() / slots_.size(), UINT16_MAX);
+  return latest_.subspan((&slot - slots_.data()) * size, size);
 }
 
 uint16_t Server::credit(uint32_t call) {

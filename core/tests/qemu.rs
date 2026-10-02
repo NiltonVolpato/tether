@@ -22,6 +22,7 @@ use tether_core::link::{LinkConfig, LinkState};
 const ECHO: MethodId = MethodId::new(0, 0);
 const COUNTDOWN: MethodId = MethodId::new(0, 1);
 const STATS: MethodId = MethodId::new(0, 2);
+const BURST: MethodId = MethodId::new(0, 3);
 /// The most channels the device serves at once.
 const MAX_STREAMS: usize = 2;
 
@@ -265,6 +266,27 @@ fn streams_with_credit() {
     assert_eq!(items, (1..=200).rev().collect::<Vec<u8>>());
     let stats = device.client.stats();
     assert_eq!((stats.overruns, stats.stale_items), (0, 0));
+}
+
+#[test]
+#[ignore = "needs the test app in QEMU; run `make -C cpp qemu-test`"]
+fn latest_value_skips_what_the_client_cant_take() {
+    let _device = DEVICE.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut device = Device::connect();
+    // The device sets 1..=100 as fast as it can, to a channel with room for
+    // one. The first goes out; the client is slower than the rest, so only the
+    // newest is kept for when it frees the slot.
+    let channel = device.client.open(BURST, vec![100], 1);
+    let mut items = Vec::new();
+    device.pump_until(Duration::from_secs(10), |_| {
+        items.extend(std::iter::from_fn(|| channel.try_recv()));
+        items.len() >= 2
+    });
+    assert_eq!(items, vec![vec![1], vec![100]]);
+    // And that's all there is: it doesn't repeat, and the channel stays open.
+    device.run_for(Duration::from_millis(200));
+    assert!(channel.try_recv().is_none());
+    assert_eq!(channel.end(), None);
 }
 
 #[test]

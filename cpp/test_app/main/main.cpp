@@ -83,7 +83,7 @@ struct App {
     router.add(greeter);
   }
 
-  tether::StaticServer<kMaxPayload, kMaxCalls> server;
+  tether::StaticServer<kMaxPayload, kMaxCalls, greeter::kMaxLatest> server;
   tether::StaticRouter<greeter::kTable.size()> router;
   greeter::Greeter greeter;
 };

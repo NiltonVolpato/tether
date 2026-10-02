@@ -69,9 +69,17 @@ class Sink {
   // Uses one credit; `NoCredit` until the client consumes earlier items.
   [[nodiscard]] std::expected<void, CallError> send(
       std::span<const std::byte> item) const;
+  // Latest-value mode: sends now if there's credit and room in the send
+  // queue; otherwise keeps `item` for when there is, replacing whatever value
+  // was waiting, so the client sees the newest and skips the ones in between.
+  // `TooLarge` if it must wait and doesn't fit the channel's latest-value
+  // buffer (see StaticServer), which a value that can go now needn't.
+  [[nodiscard]] std::expected<void, CallError> set_latest(
+      std::span<const std::byte> item) const;
   // Items that can be sent right now; 0 once closed.
   [[nodiscard]] uint16_t credit() const;
-  // Closes the channel. `QueueFull` leaves it open, to end again later.
+  // Closes the channel, dropping a value still waiting for credit. `QueueFull`
+  // leaves it open, to end again later.
   [[nodiscard]] std::expected<void, CallError> end(
       WireStatus status = WireStatus::OK) const;
 
@@ -108,6 +116,10 @@ struct CallSlot {
   MethodId method;
   // Items the client has room for, on a channel.
   uint16_t credit = 0;
+  // A value waiting for credit or queue room (see Sink::set_latest), in this
+  // slot's part of the server's latest-value memory.
+  bool has_latest = false;
+  uint16_t latest_size = 0;
 };
 
 struct ServerStats {
@@ -120,8 +132,11 @@ struct ServerStats {
 class Server {
  public:
   // At most `max_streams` channels are open at once, and a call per slot.
+  // `latest` is shared equally by the slots, for values waiting in
+  // Sink::set_latest.
   Server(uint32_t boot_id, const LinkConfig& config, LinkBuffers buffers,
-         std::span<CallSlot> slots, std::size_t max_streams);
+         std::span<CallSlot> slots, std::span<std::byte> latest,
+         std::size_t max_streams);
   Server(const Server&) = delete;
   Server& operator=(const Server&) = delete;
 
@@ -133,7 +148,8 @@ class Server {
   [[nodiscard]] std::size_t open_calls() const;
 
   // Feeds bytes read from the peer at `now`. Calls reach the dispatcher from
-  // here. Once the link is down for good, so do cancellations.
+  // here, and waiting latest values go out as credit and queue room allow.
+  // Once the link is down for good, cancellations reach it too.
   void receive(std::span<const std::byte> bytes, Millis now);
 
   // See Link::poll_transmit.
@@ -168,11 +184,18 @@ class Server {
                                          std::span<const std::byte> payload);
   std::expected<void, CallError> send_item(uint32_t call,
                                            std::span<const std::byte> item);
+  std::expected<void, CallError> set_latest(uint32_t call,
+                                            std::span<const std::byte> item);
   std::expected<void, CallError> end_stream(uint32_t call, WireStatus status);
   uint16_t credit(uint32_t call);
+  // Sends a slot's waiting value, if there's credit and room.
+  void flush_latest(CallSlot& slot);
+  // The slot's part of the latest-value memory.
+  [[nodiscard]] std::span<std::byte> latest_buffer(const CallSlot& slot) const;
 
   Link link_;
   std::span<CallSlot> slots_;
+  std::span<std::byte> latest_;
   std::size_t max_streams_;
   Dispatcher* dispatcher_ = nullptr;
   ServerStats stats_{};
@@ -180,25 +203,28 @@ class Server {
 
 namespace detail {
 
-template <std::size_t Slots>
+template <std::size_t Slots, std::size_t Latest>
 struct CallStorage {
   std::array<CallSlot, Slots> slots{};
+  std::array<std::byte, Slots * Latest> latest{};
 };
 
 }  // namespace detail
 
 // A Server with its own memory, for payloads of up to `MaxPayload` bytes and
-// `MaxCalls` open calls at a time.
-template <std::size_t MaxPayload, std::size_t MaxCalls>
+// `MaxCalls` open calls at a time. A channel can have a latest value of up to
+// `MaxLatest` bytes waiting (none by default): that much for every call slot.
+template <std::size_t MaxPayload, std::size_t MaxCalls,
+          std::size_t MaxLatest = 0>
 class StaticServer : private detail::LinkStorageFor<MaxPayload>,
-                     private detail::CallStorage<MaxCalls>,
+                     private detail::CallStorage<MaxCalls, MaxLatest>,
                      public Server {
  public:
   explicit StaticServer(uint32_t boot_id, const LinkConfig& config = {},
                         std::size_t max_streams = MaxCalls)
       : Server(boot_id, config,
                {.receive = this->receive_buffer, .queue = this->queue_buffer},
-               this->slots, max_streams) {}
+               this->slots, this->latest, max_streams) {}
 };
 
 }  // namespace tether

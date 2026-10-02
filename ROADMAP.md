@@ -71,9 +71,12 @@ schema-agnostic layer below it.
       a full send queue is backpressure (`QueueFull`), not a drop
 - [x] C++ core: router: direct-indexed dispatch; automatic `UNIMPLEMENTED` (generated services
       will answer `INVALID_ARGUMENT`)
-- [ ] C++ server: latest-value coalescing (`set_latest`). The value waiting for credit needs
-      storage per channel: a buffer sized by the caller, since there's no heap
-- [ ] tether-gen C++ output: server table, handler interfaces, typed sinks and replies
+- [x] C++ server: latest-value coalescing (`Sink::set_latest`); the waiting value lives in
+      per-slot memory sized by `StaticServer`'s `MaxLatest`, and also waits for room in a full
+      send queue
+- [ ] tether-gen C++ output: server table, handler interfaces, typed sinks and replies. One
+      code generation trait with an implementation per output: Rust, and C++ header and source
+      if they're generated separately (so three). `quote` would help the Rust one, but not C++
 - [x] Cross-language conformance: shared golden frames (`golden/frames.json`, decoded by flatc)
 - [ ] Cross-language conformance: C++ core built into the Rust simulation tests
 - [x] Integration test app (`cpp/test_app`): the C++ server on an ESP32 in QEMU, serving a

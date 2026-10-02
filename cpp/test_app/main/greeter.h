@@ -5,6 +5,8 @@
 //   Echo(bytes): bytes                      unary: answers with the request
 //   Countdown(n: u8): u8 (streaming)        n, n-1, ..., 1, as credit allows
 //   Stats(): [calls: u32, cancelled: u32]   unary, little-endian
+//   Burst(n: u8): u8 (streaming)            sets 1, 2, ..., n as the latest
+//                                           value, and keeps the channel open
 //
 // Echo with no bytes is fine; Countdown without exactly one byte is
 // INVALID_ARGUMENT.
@@ -26,11 +28,16 @@ inline constexpr uint8_t kId = 0;
 inline constexpr uint8_t kEcho = 0;
 inline constexpr uint8_t kCountdown = 1;
 inline constexpr uint8_t kStats = 2;
+inline constexpr uint8_t kBurst = 3;
 
-inline constexpr std::array<std::optional<tether::MethodInfo>, 3> kMethods{
+// The latest-value memory the server needs for Burst.
+inline constexpr std::size_t kMaxLatest = 1;
+
+inline constexpr std::array<std::optional<tether::MethodInfo>, 4> kMethods{
     tether::MethodInfo{.name = "Echo", .streaming = false},
     tether::MethodInfo{.name = "Countdown", .streaming = true},
-    tether::MethodInfo{.name = "Stats", .streaming = false}};
+    tether::MethodInfo{.name = "Stats", .streaming = false},
+    tether::MethodInfo{.name = "Burst", .streaming = true}};
 
 // The server's table: this one service.
 inline constexpr std::array<std::optional<tether::ServiceInfo>, 1> kTable{
@@ -59,12 +66,20 @@ class Greeter final : public tether::Service {
   void open(uint8_t method, std::span<const std::byte> request,
             tether::Sink sink) override {
     ++calls_;
-    if (method != kCountdown) {
+    if (method != kCountdown && method != kBurst) {
       (void)sink.end(tether::WireStatus::UNIMPLEMENTED);
       return;
     }
     if (request.size() != 1) {
       (void)sink.end(tether::WireStatus::INVALID_ARGUMENT);
+      return;
+    }
+    if (method == kBurst) {
+      // As fast as it can: whatever the client can't take yet is replaced.
+      const auto n = std::to_integer<uint8_t>(request[0]);
+      for (uint8_t value = 1; value <= n; ++value) {
+        (void)sink.set_latest(std::as_bytes(std::span(&value, 1)));
+      }
       return;
     }
     for (auto& slot : countdowns_) {

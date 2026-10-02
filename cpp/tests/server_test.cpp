@@ -26,8 +26,9 @@ using ::testing::SizeIs;
 constexpr std::size_t kMaxPayload = 256;
 constexpr std::size_t kMaxCalls = 4;
 constexpr std::size_t kMaxStreams = 2;
+constexpr std::size_t kMaxLatest = 16;
 
-using TestServer = StaticServer<kMaxPayload, kMaxCalls>;
+using TestServer = StaticServer<kMaxPayload, kMaxCalls, kMaxLatest>;
 using ClientLink = StaticLink<kMaxPayload>;
 
 std::vector<std::byte> bytes(std::initializer_list<uint8_t> values) {
@@ -424,6 +425,113 @@ TEST_F(ServerTest, ABusyQueueIsBackpressure) {
   EXPECT_THAT(rig.take(), SizeIs(2));
 }
 
+// The payloads of the items the client received, as numbers.
+std::vector<int> items(const std::vector<Received>& got) {
+  std::vector<int> out;
+  for (const auto& r : got) {
+    if (r.header.kind == Kind::Item) {
+      out.push_back(r.payload.empty() ? -1
+                                      : std::to_integer<int>(r.payload[0]));
+    }
+  }
+  return out;
+}
+
+TEST_F(ServerTest, LatestGoesAtOnceWithCredit) {
+  rig.open(20, kMethod, 2);
+  const Sink sink = recorder.channels[0].sink;
+  ASSERT_TRUE(sink.set_latest(bytes({1})));
+  ASSERT_TRUE(sink.set_latest(bytes({2})));
+  EXPECT_THAT(sink.credit(), Eq(0U));
+  rig.pump();
+  EXPECT_THAT(items(rig.take()), ElementsAre(1, 2));
+}
+
+TEST_F(ServerTest, LatestWaitsForCreditAndReplacesWhatWaits) {
+  rig.open(20, kMethod, 1);
+  const Sink sink = recorder.channels[0].sink;
+  for (const uint8_t v : {1, 2, 3}) {
+    ASSERT_TRUE(sink.set_latest(bytes({v})));
+  }
+  rig.pump();
+  // The first used the credit; 2 was replaced by 3.
+  EXPECT_THAT(items(rig.take()), ElementsAre(1));
+
+  // The waiting value goes out once, and leaves the rest of the credit.
+  rig.grant(20, 3);
+  EXPECT_THAT(items(rig.take()), ElementsAre(3));
+  EXPECT_THAT(sink.credit(), Eq(2U));
+  rig.grant(20, 1);
+  EXPECT_THAT(items(rig.take()), IsEmpty());
+  EXPECT_THAT(sink.credit(), Eq(3U));
+}
+
+TEST_F(ServerTest, LatestThatMustWaitHasToFitItsBuffer) {
+  rig.open(20, kMethod, 1);
+  const Sink sink = recorder.channels[0].sink;
+  // Not waiting, so nothing to store.
+  ASSERT_TRUE(sink.set_latest(std::vector<std::byte>(kMaxLatest + 100)));
+  EXPECT_THAT(sink.set_latest(std::vector<std::byte>(kMaxLatest + 1)),
+              Eq(std::unexpected(CallError::TooLarge)));
+  EXPECT_TRUE(sink.set_latest(std::vector<std::byte>(kMaxLatest)));
+  rig.pump();
+  EXPECT_THAT(rig.take(), SizeIs(1));
+  rig.grant(20, 1);
+  const auto got = rig.take();
+  ASSERT_THAT(got, SizeIs(1));
+  EXPECT_THAT(got[0].payload, SizeIs(kMaxLatest));
+}
+
+TEST_F(ServerTest, LatestWaitsForRoomInTheSendQueue) {
+  rig.open(20, kMethod, 100);
+  const Sink sink = recorder.channels[0].sink;
+  const std::vector<std::byte> big(kMaxPayload);
+  // Full to the last small frame, not only too full for a big one.
+  int sent = 0;
+  while (sink.send(big)) {
+    ++sent;
+  }
+  while (sink.send(bytes({0}))) {
+    ++sent;
+  }
+  ASSERT_THAT(sink.send(bytes({0})), Eq(std::unexpected(CallError::QueueFull)));
+  // It can wait, so unlike send it isn't refused; a newer value replaces it.
+  // One that can't wait is: it'd have to go now.
+  ASSERT_TRUE(sink.set_latest(bytes({7})));
+  ASSERT_TRUE(sink.set_latest(bytes({8})));
+  EXPECT_THAT(sink.set_latest(big), Eq(std::unexpected(CallError::QueueFull)));
+  EXPECT_THAT(sink.credit(), Eq(100 - sent));
+
+  // The acks make room, and then it goes.
+  rig.pump();
+  const auto got = items(rig.take());
+  ASSERT_THAT(got, SizeIs(sent + 1));
+  EXPECT_THAT(got.back(), Eq(8));
+  EXPECT_THAT(sink.credit(), Eq(100 - sent - 1));
+}
+
+TEST_F(ServerTest, EndDropsTheWaitingLatest) {
+  rig.open(20, kMethod, 0);
+  const Sink sink = recorder.channels[0].sink;
+  ASSERT_TRUE(sink.set_latest(bytes({5})));
+  ASSERT_TRUE(sink.end());
+  rig.pump();
+  const auto got = rig.take();
+  ASSERT_THAT(got, SizeIs(1));
+  EXPECT_THAT(got[0].header.kind, Eq(Kind::End));
+  // A later channel in the same slot doesn't inherit it.
+  rig.open(21, kMethod, 1);
+  rig.pump();
+  EXPECT_THAT(rig.take(), IsEmpty());
+}
+
+TEST_F(ServerTest, LatestOnAClosedChannelIsClosed) {
+  rig.open(20, kMethod, 0);
+  rig.cancel(20);
+  EXPECT_THAT(recorder.channels[0].sink.set_latest({}),
+              Eq(std::unexpected(CallError::Closed)));
+}
+
 TEST_F(ServerTest, ReplyTooLargeForTheQueueNeverFits) {
   rig.request(10, kMethod);
   const Reply reply = recorder.calls[0].reply;
@@ -451,7 +559,7 @@ TEST(ServerQueue, RejectionsThatDontFitAreCounted) {
   alignas(8) std::array<std::byte, max_wire_size(32) - 1> rx{};
   std::array<std::byte, 2 + max_wire_size(0) + 10> tx{};
   std::array<CallSlot, 2> slots{};
-  Server server(0xB1, {}, {.receive = rx, .queue = tx}, slots, 1);
+  Server server(0xB1, {}, {.receive = rx, .queue = tx}, slots, {}, 1);
   ClientLink client(0xA1);
   const Millis now{0};
   while (server.link().state() != LinkState::Linked) {
