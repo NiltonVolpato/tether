@@ -1,11 +1,9 @@
 // The device side of tether's integration test. It serves the Rust tests in
 // core/tests/qemu.rs over UART1; UART0 is the console.
 //
-// For now it runs a link and echoes every frame the link delivers back through
-// the link. Credits payloads are verified with flatbuffers here on the target
-// first, alignment checks included; a failure comes back as DATA_LOSS in the
-// echoed header's status. When the link ends (the host restarted, or went
-// quiet), it starts a new one, as a device would after rebooting.
+// It runs a server with the Greeter service (greeter.h) behind a router. When
+// the link ends (the host restarted, or went quiet), it starts a new one, as a
+// device would after rebooting.
 
 #include <algorithm>
 #include <array>
@@ -17,7 +15,9 @@
 #include "driver/uart.h"
 #include "esp_log.h"
 #include "esp_random.h"
-#include "tether/link.h"
+#include "greeter.h"
+#include "tether/router.h"
+#include "tether/server.h"
 
 namespace {
 
@@ -71,43 +71,40 @@ const char* name(tether::LinkState state) {
   return "?";
 }
 
-// Whether a Credits payload passes the flatbuffers verifier.
-bool verifies(std::span<const std::byte> payload) {
-  flatbuffers::Verifier verifier(
-      reinterpret_cast<const uint8_t*>(payload.data()), payload.size());
-  return verifier.VerifyBuffer<tether::wire::Credits>();
-}
+constexpr std::size_t kMaxCalls = 4;
+constexpr std::size_t kMaxStreams = 2;
 
-void echo(tether::Link& link, const tether::Frame& frame) {
-  tether::Header header = frame.header;
-  ESP_LOGD(kTag, "echoing %s, %zu payload bytes",
-           tether::wire::EnumNameKind(header.kind), frame.payload.size());
-  if (header.kind == tether::Kind::Credit && !verifies(frame.payload)) {
-    ESP_LOGW(kTag, "Credits payload failed to verify");
-    header.status = tether::WireStatus::DATA_LOSS;
+// A server and what it serves, all of one link's life.
+struct App {
+  explicit App(uint32_t boot_id)
+      : server(boot_id, tether::LinkConfig{.baud_rate = kBaudRate},
+               kMaxStreams),
+        router(server, greeter::kTable) {
+    router.add(greeter);
   }
-  // The host waits for each echo before sending more, so there's room.
-  if (!link.send(header, frame.payload)) {
-    ESP_LOGE(kTag, "no room to echo");
-  }
-}
 
-// Runs the link until it ends.
-void serve(tether::Link& link) {
+  tether::StaticServer<kMaxPayload, kMaxCalls> server;
+  tether::StaticRouter<greeter::kTable.size()> router;
+  greeter::Greeter greeter;
+};
+
+// Runs the server until its link ends.
+void serve(App& app) {
+  tether::Server& server = app.server;
   std::array<std::byte, 256> rx{};
-  tether::LinkState state = link.state();
-  while (!tether::is_terminal(link.state())) {
-    while (const auto wire = link.poll_transmit(now())) {
+  tether::LinkState state = server.link().state();
+  while (!tether::is_terminal(server.link().state())) {
+    while (const auto wire = server.poll_transmit(now())) {
       uart_write_bytes(kPort, wire->data(), wire->size());
     }
-    if (link.state() != state) {
-      state = link.state();
+    if (server.link().state() != state) {
+      state = server.link().state();
       ESP_LOGI(kTag, "link %s", name(state));
     }
     // Sleep until bytes arrive or the link's next deadline. uart_read_bytes
     // waits for all the bytes asked for, so ask for what's buffered, or one.
     const Millis wait =
-        std::max(Millis(0), link.next_deadline().value_or(now()) - now());
+        std::max(Millis(0), server.next_deadline().value_or(now()) - now());
     std::size_t buffered = 0;
     ESP_ERROR_CHECK(uart_get_buffered_data_len(kPort, &buffered));
     const int n = uart_read_bytes(
@@ -118,14 +115,16 @@ void serve(tether::Link& link) {
     }
     ESP_LOGD(kTag, "read %d bytes", n);
     ESP_LOG_BUFFER_HEXDUMP(kTag, rx.data(), n, ESP_LOG_DEBUG);
-    link.receive(std::span(rx).first(n), now(),
-                 [&](const tether::Frame& frame) { echo(link, frame); });
+    server.receive(std::span(rx).first(n), now());
+    // Credit may have arrived.
+    app.greeter.pump();
   }
-  const auto& stats = link.stats();
+  const auto& stats = server.link().stats();
   ESP_LOGW(kTag,
            "link %s (tx %lu, rx %lu, retransmits %lu, duplicates %lu, crc "
            "errors %lu, cobs errors %lu, other errors %lu)",
-           name(link.state()), static_cast<unsigned long>(stats.frames_tx),
+           name(server.link().state()),
+           static_cast<unsigned long>(stats.frames_tx),
            static_cast<unsigned long>(stats.frames_rx),
            static_cast<unsigned long>(stats.retransmits),
            static_cast<unsigned long>(stats.duplicates),
@@ -141,12 +140,12 @@ extern "C" void app_main() {
   esp_log_level_set(kTag, ESP_LOG_DEBUG);
   uart_init();
   // Too large for the stack.
-  static std::optional<tether::StaticLink<kMaxPayload>> link;
+  static std::optional<App> app;
   for (;;) {
     const uint32_t boot_id = esp_random() | 1;
     ESP_LOGI(kTag, "new link, boot id %08lx",
              static_cast<unsigned long>(boot_id));
-    link.emplace(boot_id, tether::LinkConfig{.baud_rate = kBaudRate});
-    serve(*link);
+    app.emplace(boot_id);
+    serve(*app);
   }
 }

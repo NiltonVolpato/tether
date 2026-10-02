@@ -10,7 +10,7 @@ FMT_CHECK_STAMP := $(BUILD)/.fmt_check.stamp
 
 # Ours only: not tether/generated/ or tether/third_party/.
 FMT_SRCS := $(wildcard tether/include/tether/*.h tether/src/*.cpp tests/*.cpp tests/*.h \
-                      test_app/main/*.cpp)
+                      test_app/main/*.cpp test_app/main/*.h)
 SRCS := $(FMT_SRCS) $(wildcard tether/generated/tether/*.h) CMakeLists.txt \
         tether/CMakeLists.txt tests/CMakeLists.txt .clang-tidy
 

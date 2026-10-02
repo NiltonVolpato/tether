@@ -1,8 +1,20 @@
 # tether's C++ core
 
-The co-processor's side of tether, in C++23: framing so far; the link, server
-and router to follow. It implements the same wire format as the Rust core
-(`../core`), checked against the shared golden frames (`../golden/frames.json`).
+The co-processor's side of tether, in C++23: framing, the link, the server and
+the router. It implements the same protocol as the Rust core (`../core`), checked
+against the shared golden frames (`../golden/frames.json`) and, in QEMU, against
+the Rust client.
+
+- `Link`: reliable, in-order frames over the UART.
+- `Server`: open calls in a fixed table; hands each request to a `Dispatcher`
+  with a `Reply` or a `Sink` to answer it, which are cheap handles to keep. A
+  full send queue shows up as `CallError::QueueFull`, to retry.
+- `Router`: the `Dispatcher` that sends each call to the `Service` that owns
+  its method, from the server's table (`descriptor.h`), and answers the rest
+  `UNIMPLEMENTED`. `Service` is what tether-gen's output will implement.
+
+`StaticLink`, `StaticServer` and `StaticRouter` bring their own memory, sized by
+template parameters.
 
 It's written for embedded targets without giving up modern C++:
 

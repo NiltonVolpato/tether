@@ -67,13 +67,17 @@ schema-agnostic layer below it.
 
 - [x] C++ core: framing, passing the goldens
 - [x] C++ core: link, with host tests, an event-driven sim, and against the Rust link in QEMU
-- [ ] C++ core: server (unary replies, streaming sinks with credits, cancellation, stream limit)
-- [ ] C++ core: router (direct-indexed dispatch; automatic `UNIMPLEMENTED` and `INVALID_ARGUMENT`)
+- [x] C++ core: server: unary replies, channel sinks with credit, cancellation, stream limit;
+      a full send queue is backpressure (`QueueFull`), not a drop
+- [x] C++ core: router: direct-indexed dispatch; automatic `UNIMPLEMENTED` (generated services
+      will answer `INVALID_ARGUMENT`)
+- [ ] C++ server: latest-value coalescing (`set_latest`). The value waiting for credit needs
+      storage per channel: a buffer sized by the caller, since there's no heap
 - [ ] tether-gen C++ output: server table, handler interfaces, typed sinks and replies
 - [x] Cross-language conformance: shared golden frames (`golden/frames.json`, decoded by flatc)
 - [ ] Cross-language conformance: C++ core built into the Rust simulation tests
-- [x] Integration test app (`cpp/test_app`): the C++ core on an ESP32 in QEMU, echoing frames
-      over UART1 to the Rust tests (`make -C cpp qemu-test`); grows with the C++ link and server
+- [x] Integration test app (`cpp/test_app`): the C++ server on an ESP32 in QEMU, serving a
+      hand-written Greeter to the Rust client over UART1 (`make -C cpp qemu-test`)
 
 ## Integration
 

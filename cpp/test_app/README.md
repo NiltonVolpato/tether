@@ -5,12 +5,12 @@ tests in `core/tests/qemu.rs` over UART1. UART0 is the console. It's built the
 way ESP-IDF's own component test apps are: a small project with `COMPONENTS
 main`, pulling in the component from `../tether`.
 
-For now the app echoes frames: whatever it decodes, it encodes back. It first
-verifies the framework's own payloads (Hello, Credits) with flatbuffers, on the
-target; a failure comes back as `DATA_LOSS` in the echoed header. So the tests
-check the two cores against each other with the C++ one built by the target's
-compiler, with ESP-IDF's settings, running on (emulated) xtensa. It'll grow into
-the link, calls and channels as the C++ core does.
+The app runs a server and a router with one service, `Greeter`, written by
+hand in `main/greeter.h` the way tether-gen is to generate them: `Echo` answers
+with its request, `Countdown` streams `n..1` as the client grants credit, and
+`Stats` reports the calls and cancellations it saw. The Rust tests call it with
+a real client, so the two cores check each other, with the C++ one built by the
+target's compiler, with ESP-IDF's settings, running on (emulated) xtensa.
 
 ## In QEMU
 

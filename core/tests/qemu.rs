@@ -4,18 +4,26 @@
 //! the rate; 0 for a pty). `make -C cpp qemu-test` starts QEMU and runs these;
 //! they're ignored otherwise.
 //!
-//! The device runs the C++ link and echoes every frame it delivers, so the Rust
-//! link here talks to the C++ one: handshake, retransmits, and both cores'
-//! framing, with the C++ one built for and running on the target.
+//! The device runs the C++ server with the Greeter service (cpp/test_app/main/
+//! greeter.h), and a Rust client calls it: the handshake, retransmits, both
+//! cores' framing, calls, channels with credit and cancellation, with the C++
+//! one built for and running on the target.
 
 use std::io::{ErrorKind, Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, mpsc};
 use std::time::{Duration, Instant, SystemTime};
 
-use tether_core::frame::{Frame, Header};
-use tether_core::link::{Link, LinkConfig, LinkState};
-use tether_core::wire::{Credits, CreditsArgs, Grant, Kind, Status};
+use tether::{MethodId, RawChannel, Status};
+use tether_core::client::{Channel, Client};
+use tether_core::link::{LinkConfig, LinkState};
+
+/// `Test.Greeter`, as cpp/test_app/main/greeter.h serves it.
+const ECHO: MethodId = MethodId::new(0, 0);
+const COUNTDOWN: MethodId = MethodId::new(0, 1);
+const STATS: MethodId = MethodId::new(0, 2);
+/// The most channels the device serves at once.
+const MAX_STREAMS: usize = 2;
 
 /// The device serves one test at a time.
 static DEVICE: Mutex<()> = Mutex::new(());
@@ -28,7 +36,7 @@ struct Device {
     received: mpsc::Receiver<Vec<u8>>,
     stop: Arc<AtomicBool>,
     reader: Option<std::thread::JoinHandle<()>>,
-    link: Link,
+    client: Client,
     start: Instant,
 }
 
@@ -69,11 +77,11 @@ impl Device {
             })
         };
         let nanos = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_nanos();
-        let link = Link::new(nanos as u32 | 1, LinkConfig::default());
+        let client = Client::new(nanos as u32 | 1, LinkConfig::default());
         let mut device =
-            Self { port, received, stop, reader: Some(reader), link, start: Instant::now() };
+            Self { port, received, stop, reader: Some(reader), client, start: Instant::now() };
         device.pump_until(Duration::from_secs(60), |d| {
-            matches!(d.link.state(), LinkState::Linked { .. })
+            matches!(d.client.link_state(), LinkState::Linked { .. })
         });
         device
     }
@@ -82,38 +90,76 @@ impl Device {
         self.start.elapsed().as_millis() as u64
     }
 
-    /// Runs the link until `done` holds.
-    fn pump_until(&mut self, timeout: Duration, mut done: impl FnMut(&mut Self) -> bool) {
-        let deadline = Instant::now() + timeout;
-        while !done(self) {
-            let (state, stats) = (self.link.state(), self.link.stats());
-            assert!(Instant::now() < deadline, "timed out; link {state:?}, {stats:?}");
-            assert!(!state.is_terminal(), "link {state:?}, {stats:?}");
-            while let Some(wire) = self.link.poll_transmit(self.now()) {
-                self.write(&wire);
-            }
-            // Everything that arrived, before sending again: writes can block
-            // while QEMU drains the pty, and acks mustn't wait behind them.
-            match self.received.recv_timeout(Duration::from_millis(5)) {
-                Ok(bytes) => self.link.receive(&bytes),
-                Err(mpsc::RecvTimeoutError::Timeout) => {}
-                Err(e) => panic!("the reader stopped: {e}"),
-            }
-            while let Ok(bytes) = self.received.try_recv() {
-                self.link.receive(&bytes);
-            }
+    /// One round of the client's I/O: writes what's due, then reads what arrived.
+    fn pump_once(&mut self) {
+        let (state, stats) = (self.client.link_state(), self.client.link_stats());
+        assert!(!state.is_terminal(), "link {state:?}, {stats:?}");
+        while let Some(wire) = self.client.poll_transmit(self.now()) {
+            self.write(&wire);
+        }
+        // Everything that arrived, before sending again: writes can block
+        // while QEMU drains the pty, and acks mustn't wait behind them.
+        match self.received.recv_timeout(Duration::from_millis(5)) {
+            Ok(bytes) => self.client.receive(&bytes),
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(e) => panic!("the reader stopped: {e}"),
+        }
+        while let Ok(bytes) = self.received.try_recv() {
+            self.client.receive(&bytes);
         }
     }
 
-    /// Sends a frame and waits for the device to echo it.
-    fn echo(&mut self, header: Header, payload: &[u8]) -> Frame {
-        self.link.send(header, payload.to_vec());
-        let mut echo = None;
-        self.pump_until(Duration::from_secs(10), |d| {
-            echo = echo.take().or_else(|| d.link.poll_receive());
-            echo.is_some()
+    /// Runs the client until `done` holds.
+    fn pump_until(&mut self, timeout: Duration, mut done: impl FnMut(&mut Self) -> bool) {
+        let deadline = Instant::now() + timeout;
+        while !done(self) {
+            let (state, stats) = (self.client.link_state(), self.client.link_stats());
+            assert!(Instant::now() < deadline, "timed out; link {state:?}, {stats:?}");
+            self.pump_once();
+        }
+    }
+
+    /// Runs the client for `duration`, for things to happen on the device.
+    fn run_for(&mut self, duration: Duration) {
+        let end = Instant::now() + duration;
+        while Instant::now() < end {
+            self.pump_once();
+        }
+    }
+
+    /// A unary call, waited for.
+    fn call(&mut self, method: MethodId, request: &[u8]) -> Result<Vec<u8>, Status> {
+        let call = self.client.call(method, request.to_vec(), 5_000);
+        let mut result = None;
+        self.pump_until(Duration::from_secs(10), |_| {
+            result = call.try_result();
+            result.is_some()
         });
-        echo.unwrap()
+        result.unwrap()
+    }
+
+    /// The device's counters: calls started, and calls cancelled.
+    fn stats(&mut self) -> (u32, u32) {
+        let stats = self.call(STATS, &[]).unwrap();
+        let word = |i: usize| u32::from_le_bytes(stats[i..i + 4].try_into().unwrap());
+        (word(0), word(4))
+    }
+
+    /// Opens a Countdown channel of `capacity` items.
+    fn countdown(&mut self, n: u8, capacity: u16) -> Channel {
+        self.client.open(COUNTDOWN, vec![n], capacity)
+    }
+
+    /// Everything a channel delivers, until it ends.
+    fn drain(&mut self, channel: &Channel) -> (Vec<Vec<u8>>, Result<(), Status>) {
+        let mut items = Vec::new();
+        let mut end = None;
+        self.pump_until(Duration::from_secs(30), |_| {
+            items.extend(std::iter::from_fn(|| channel.try_recv()));
+            end = channel.end();
+            end.is_some()
+        });
+        (items, end.unwrap())
     }
 
     /// Writes bytes straight to the port, around the link.
@@ -146,15 +192,6 @@ impl Drop for Device {
     }
 }
 
-fn credits(n: u32) -> Vec<u8> {
-    let mut fbb = flatbuffers::FlatBufferBuilder::new();
-    let grants: Vec<_> = (0..n).map(|i| Grant::new(i * 7919, i as u16)).collect();
-    let grants = fbb.create_vector(&grants);
-    let credits = Credits::create(&mut fbb, &CreditsArgs { grants: Some(grants) });
-    fbb.finish(credits, None);
-    fbb.finished_data().to_vec()
-}
-
 fn golden_frames() -> Vec<serde_json::Value> {
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../golden/frames.json");
     serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
@@ -167,17 +204,12 @@ fn unhex(hex: &str) -> Vec<u8> {
         .collect()
 }
 
-/// The echo, with the seq the device's link gave it replaced by ours.
-fn as_sent(echo: Frame, sent: &Header) -> (Header, Vec<u8>) {
-    (Header { seq: sent.seq, ..echo.header }, echo.payload)
-}
-
 #[test]
 #[ignore = "needs the test app in QEMU; run `make -C cpp qemu-test`"]
 fn links_with_the_device() {
     let _device = DEVICE.lock().unwrap_or_else(PoisonError::into_inner);
     let device = Device::connect();
-    let LinkState::Linked { peer_boot_id } = device.link.state() else {
+    let LinkState::Linked { peer_boot_id } = device.client.link_state() else {
         unreachable!()
     };
     assert_ne!(peer_boot_id, 0);
@@ -185,42 +217,14 @@ fn links_with_the_device() {
 
 #[test]
 #[ignore = "needs the test app in QEMU; run `make -C cpp qemu-test`"]
-fn echoes_every_kind_with_every_padding() {
+fn echoes_every_padding() {
     let _device = DEVICE.lock().unwrap_or_else(PoisonError::into_inner);
     let mut device = Device::connect();
-    let mut sent = 0u32;
-    // The kinds the link delivers; it handles Hello, Ack and Ping itself.
-    for kind in [
-        Kind::Request,
-        Kind::Open,
-        Kind::Response,
-        Kind::Item,
-        Kind::End,
-        Kind::Credit,
-        Kind::Cancel,
-    ] {
-        let payloads: Vec<Vec<u8>> = match kind {
-            Kind::Credit => (0..=9).map(credits).collect(),
-            // Zeros for COBS, every length modulo 8 for the padding, and runs
-            // past one COBS block.
-            _ => [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 15, 16, 17, 253, 254, 255, 256, 511, 900]
-                .iter()
-                .map(|&len| (0..len).map(|i| (i * 31 % 251) as u8).collect())
-                .collect(),
-        };
-        for (i, payload) in payloads.iter().enumerate() {
-            let header = Header {
-                call_id: 0xA000_0000 | sent,
-                service: i as u8,
-                method: (i * 3) as u8,
-                credit: (i * 1000) as u16,
-                status: Status(i as i8 % 17),
-                ..Header::new(kind)
-            };
-            let echo = device.echo(header, payload);
-            assert_eq!(as_sent(echo, &header), (header, payload.clone()), "{kind:?}, {i}");
-            sent += 1;
-        }
+    // Zeros for COBS, every length modulo 8 for the padding, and runs past one
+    // COBS block, up to the device's largest payload.
+    for len in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 15, 16, 17, 253, 254, 255, 256, 511, 900] {
+        let request: Vec<u8> = (0..len).map(|i| (i * 31 % 251) as u8).collect();
+        assert_eq!(device.call(ECHO, &request), Ok(request), "{len} bytes");
     }
 }
 
@@ -239,21 +243,98 @@ fn recovers_from_bad_frames_and_line_noise() {
         // an ack, is lost, and the link retransmits.
         device.inject(wire);
         device.inject(&[0x55, 0xAA, 0x13]);
-        let header = Header { call_id: i as u32, ..Header::new(Kind::Cancel) };
-        let echo = device.echo(header, &[1, 2, 3]);
-        assert_eq!(as_sent(echo, &header), (header, vec![1, 2, 3]), "after {i}");
+        let request = vec![i as u8, 1, 2, 3];
+        assert_eq!(device.call(ECHO, &request), Ok(request), "after {i}");
     }
     // Some frame was lost, in one direction or the other.
-    let stats = device.link.stats();
+    let stats = device.client.link_stats();
     assert!(stats.retransmits + stats.duplicates > 0, "the noise cost no frame: {stats:?}");
 }
 
 #[test]
 #[ignore = "needs the test app in QEMU; run `make -C cpp qemu-test`"]
-fn verifies_credits_on_the_device() {
+fn streams_with_credit() {
     let _device = DEVICE.lock().unwrap_or_else(PoisonError::into_inner);
     let mut device = Device::connect();
-    let header = Header::new(Kind::Credit);
-    assert_eq!(device.echo(header, &credits(3)).header.status, Status::OK);
-    assert_eq!(device.echo(header, &[0xFF; 24]).header.status, Status::DATA_LOSS);
+    // Far more items than the channel holds: the device waits for the Credits
+    // frames it verifies, as the client frees slots.
+    let channel = device.countdown(200, 4);
+    let (items, end) = device.drain(&channel);
+    assert_eq!(end, Ok(()));
+    let items: Vec<u8> = items.iter().map(|item| item[0]).collect();
+    assert_eq!(items, (1..=200).rev().collect::<Vec<u8>>());
+    let stats = device.client.stats();
+    assert_eq!((stats.overruns, stats.stale_items), (0, 0));
+}
+
+#[test]
+#[ignore = "needs the test app in QEMU; run `make -C cpp qemu-test`"]
+fn an_empty_stream_ends_at_once() {
+    let _device = DEVICE.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut device = Device::connect();
+    let channel = device.countdown(0, 1);
+    assert_eq!(device.drain(&channel), (vec![], Ok(())));
+}
+
+#[test]
+#[ignore = "needs the test app in QEMU; run `make -C cpp qemu-test`"]
+fn the_router_answers_what_isnt_served() {
+    let _device = DEVICE.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut device = Device::connect();
+    // An unknown method, a service that isn't there, and the wrong kind of
+    // call, both ways.
+    for method in [MethodId::new(0, 9), MethodId::new(1, 0), COUNTDOWN] {
+        assert_eq!(device.call(method, &[1]), Err(Status::Unimplemented), "{method:?}");
+    }
+    for method in [MethodId::new(0, 9), MethodId::new(1, 0), ECHO] {
+        let channel = device.client.open(method, vec![1], 1);
+        let (items, end) = device.drain(&channel);
+        assert_eq!((items.len(), end), (0, Err(Status::Unimplemented)), "{method:?}");
+    }
+}
+
+#[test]
+#[ignore = "needs the test app in QEMU; run `make -C cpp qemu-test`"]
+fn the_service_answers_what_it_cant_read() {
+    let _device = DEVICE.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut device = Device::connect();
+    for request in [vec![], vec![1, 2]] {
+        let channel = device.client.open(COUNTDOWN, request.clone(), 1);
+        let (items, end) = device.drain(&channel);
+        assert_eq!((items.len(), end), (0, Err(Status::InvalidArgument)), "{request:?}");
+    }
+}
+
+#[test]
+#[ignore = "needs the test app in QEMU; run `make -C cpp qemu-test`"]
+fn limits_the_open_channels() {
+    let _device = DEVICE.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut device = Device::connect();
+    // Each waits for credit after its first item, and so stays open.
+    let open: Vec<Channel> = (0..MAX_STREAMS).map(|_| device.countdown(255, 1)).collect();
+    let rejected = device.countdown(255, 1);
+    let (items, end) = device.drain(&rejected);
+    assert_eq!((items.len(), end), (0, Err(Status::ResourceExhausted)));
+    assert!(open.iter().all(|c| c.end().is_none()));
+
+    // Dropping cancels them on the device, which frees the room.
+    drop(open);
+    device.run_for(Duration::from_millis(200));
+    let (calls, cancelled) = device.stats();
+    assert_eq!((calls, cancelled), (MAX_STREAMS as u32 + 1, MAX_STREAMS as u32));
+    let channel = device.countdown(1, 1);
+    assert_eq!(device.drain(&channel), (vec![vec![1]], Ok(())));
+}
+
+#[test]
+#[ignore = "needs the test app in QEMU; run `make -C cpp qemu-test`"]
+fn dropping_a_call_cancels_it_on_the_device() {
+    let _device = DEVICE.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut device = Device::connect();
+    let channel = device.countdown(255, 2);
+    device.pump_until(Duration::from_secs(10), |_| channel.try_recv().is_some());
+    drop(channel);
+    device.run_for(Duration::from_millis(200));
+    // The channel's open, and this call.
+    assert_eq!(device.stats(), (2, 1));
 }
