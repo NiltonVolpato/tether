@@ -11,9 +11,11 @@
 | `gen/flatbuffers/` | flatbuffers v25.12.19 (a submodule), whose schema parser `tether-gen` links |
 | `schema/`        | `wire.fbs` (the wire format) and `tether.fbs` (attributes apps include) |
 | `golden/`        | Golden frames: the wire format as bytes, shared by both cores |
-| `cpp/tether/`    | The C++ core, an ESP-IDF component                           |
-| `cpp/tests/`     | Its host tests (GoogleTest)                                  |
+| `cpp/tether/`    | The C++ core, an ESP-IDF component (and a plain CMake library) |
+| `cpp/tether_idf/` | The ESP-IDF glue: a server's UART I/O from FreeRTOS tasks   |
+| `cpp/tests/`     | The core's host tests (GoogleTest)                           |
 | `cpp/test_app/`  | An ESP-IDF app for integration tests against the Rust core   |
+| `docs/`          | `integration.md`: how an application puts tether to use      |
 
 Builds go to `target/` (Cargo) and `build/` (everything else). Building
 `tether-gen` needs the submodule: clone with `--recursive`, or run

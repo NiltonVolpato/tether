@@ -3,12 +3,14 @@
 An ESP-IDF app that runs tether's C++ core on an ESP32 and serves the Rust
 tests in `core/tests/qemu.rs` over UART1. UART0 is the console. It's built the
 way ESP-IDF's own component test apps are: a small project with `COMPONENTS
-main`, pulling in the component from `../tether`.
+main`, pulling in the components from `../tether` and `../tether_idf`.
 
 The app runs a server and a router with one service, `Greeter`, from
-`greeter.fbs`: `Echo` answers with its request, `Countdown` streams `n..1` as
-the client grants credit, `Burst` sets `1..n` as the latest value, and `Stats`
-reports the calls and cancellations it saw. The interface it implements
+`greeter.fbs`, on an I/O task of its own (`tether_idf`'s `UartIo`), as
+`docs/integration.md` describes. `Echo` answers with its request, `Countdown`
+streams `n..1` as the client grants credit (from a task of its own, which waits
+for the credit), `Burst` sets `1..n` as the latest value, and `Stats` reports
+the calls and cancellations it saw on the current link. The interface it implements
 (`main/generated/greeter_rpc.h`) is tether-gen's C++ output; the Rust tests call
 it with the client tether-gen generates from the same schema. So the two cores
 and the two generators check each other, with the C++ one built by the target's

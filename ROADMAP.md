@@ -83,17 +83,19 @@ schema-agnostic layer below it.
       (the C++ one is a single header). Servers only; `quote` would help the Rust one, not C++
 - [ ] tether-gen C++ client (a Transport over the C++ link), for "client and server in both
       languages" below
-- [ ] C++ messages built in the send queue, not in the server's scratch block. The scratch is
-      one buffer for every reply and sink, free by convention only: a build that nests another
-      send silently corrupts it, it costs a payload's worth of RAM, and a message over its size
-      aborts. Instead a bip buffer for the send path: reserve the largest contiguous free
-      region, build the flatbuffer in it (an allocator that grows the builder in place, with no
-      copy), commit the size; several messages can be waiting at once. The lease replaces the
-      lambda: `auto msg = reply.builder(); ...; reply.send(msg)`. Needs the queue to hold raw
-      header and payload, COBS-encoded as `poll_transmit` sends them (retransmits re-encode).
-      A full queue stays `QueueFull` in the sans-IO core; `tether_idf` blocks on a semaphore,
-      so handlers must run on another task than the link's I/O. A build that outgrows the
-      region still aborts: flatbuffers can't fail softly
+- [x] C++ messages built in the send queue; the server's scratch block is gone. The queue holds
+      frame bodies, COBS-encoded in 128-byte pieces as `poll_transmit` sends them (retransmits
+      re-encode); `Link::reserve` gives a build the room for the largest body, compacting the
+      queue so it's contiguous (a bip buffer would need 3× the memory for the same guarantee),
+      and `commit` moves the payload into place. The lambda stays: it lets the server check
+      the call, the credit and the room before anything is built. A send from inside a build
+      aborts instead of corrupting it; a build that outgrows `MaxPayload` still aborts
+- [x] C++ server: `ServerHooks` (lock, unlock, wake) for threads; `restart` reuses a server for a
+      new link, and handles carry an epoch, so ones from an earlier link stay closed; handles
+      can be default-made (closed), e.g. to receive into
+- [ ] C++ typed sends start only with room for a `MaxPayload` message, even for a small one, so
+      many small typed sends fill the queue sooner than raw ones; per-method size bounds from
+      the schema would let them start with less
 - [x] Cross-language conformance: shared golden frames (`golden/frames.json`, decoded by flatc)
 - [ ] Cross-language conformance: C++ core built into the Rust simulation tests
 - [x] Integration test app (`cpp/test_app`): the C++ server on an ESP32 in QEMU, serving a
@@ -104,13 +106,22 @@ schema-agnostic layer below it.
 - [x] `tether-embassy` crate: the client's and the server's I/O tasks over `embedded-io-async` and
       `embassy-time`, one executor; tested on the host, end to end over lossy in-memory pipes on
       embassy's mock clock (it also builds for `thumbv7em-none-eabihf` and `riscv32imac`)
+- [x] Integration guide (`docs/integration.md`): schema, codegen, both sides' setup, threads,
+      sizing that must agree across the wire, testing, troubleshooting
 - [ ] S3: task layout, and the esp-hal UART setup for those tasks (in smart-dial)
-- [ ] `tether_idf` component: the FreeRTOS task glue, blocking on a queue set of the UART
-      driver's event queue and a wake semaphore, with the link's next deadline as the timeout.
-      Acks stay in that task (high priority); ack from the UART ISR only if measured ack latency
-      limits 5 Mbps (it would need the link's seq state shared with the ISR)
-- [ ] Recovery from a terminal link (`PeerLost`, `PeerRebooted`): new client with a new boot id,
-      or reset the co-processor
+- [x] `tether_idf` component: `UartIo` runs a server's I/O on one task, blocking on a queue set
+      of the UART driver's event queue and a wake semaphore, with the link's next deadline as
+      the timeout. Handlers run there; other tasks use replies and sinks under its recursive
+      mutex, and `wait()` retries a send on `QueueFull`/`NoCredit` each time something arrives
+- [ ] Acks from the UART ISR, only if measured ack latency limits 5 Mbps (it would need the
+      link's seq state shared with the ISR)
+- [ ] Recovery from a terminal link (`PeerLost`, `PeerRebooted`) on the S3: the Rust client
+      can't restart, so it's a new client with a new boot id, and the apps must move to it.
+      A `restart` like the C++ server's (done), or a client that survives its links
+- [ ] Sizes checked across the wire: today the Rust client's `max_frame` must be at least
+      the C++ server's frames, and its requests at most the server's `MaxPayload`, or the link
+      is lost (a frame dropped as overflow is retransmitted until `PeerLost`). Exchange the
+      limits in Hello, and refuse an oversized request with an error
 - [ ] Port Wifi and provisioning to services
 - [ ] Port time sync and battery to services
 - [ ] Remove the old Heartbeat/Hello code on both sides
