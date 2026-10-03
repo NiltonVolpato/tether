@@ -82,7 +82,10 @@ impl Device {
             })
         };
         let nanos = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_nanos();
-        let client = SharedClient::new(Client::new(nanos as u32 | 1, LinkConfig::default()));
+        // The test app's frames: `tether::max_wire_size(1024) - 1`, for its
+        // payloads of up to 1024 bytes.
+        let config = LinkConfig { max_frame: 1104, ..LinkConfig::default() };
+        let client = SharedClient::new(Client::new(nanos as u32 | 1, config));
         let mut device =
             Self { port, received, stop, reader: Some(reader), client, start: Instant::now() };
         device.pump_until(Duration::from_secs(60), |d| {
@@ -269,8 +272,9 @@ fn echoes_every_padding() {
     let _device = DEVICE.lock().unwrap_or_else(PoisonError::into_inner);
     let mut device = Device::connect();
     // Zeros for COBS, every length modulo 8 for the padding, and runs past one
-    // COBS block, up to the device's largest payload.
-    for len in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 15, 16, 17, 253, 254, 255, 256, 511, 900] {
+    // COBS block, up to the device's largest payload (990 bytes in a Blob is
+    // 1016 of its 1024).
+    for len in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 15, 16, 17, 253, 254, 255, 256, 511, 900, 990] {
         let request: Vec<u8> = (0..len).map(|i| (i * 31 % 251) as u8).collect();
         assert_eq!(device.echo(&request), request, "{len} bytes");
     }
