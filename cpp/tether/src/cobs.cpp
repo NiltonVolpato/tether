@@ -82,4 +82,49 @@ void CobsEncoder::end_block() {
   code_ = 1;
 }
 
+std::size_t CobsStream::next(std::span<const std::byte> data,
+                             std::span<std::byte> out) {
+  std::size_t written = 0;
+  while (written < out.size()) {
+    switch (step_) {
+      case Step::Code: {
+        // A block is the bytes up to the next zero, at most 254 of them.
+        const auto rest = data.subspan(at_);
+        const auto block = rest.first(std::min<std::size_t>(rest.size(), 254));
+        left_ = static_cast<std::size_t>(
+            std::ranges::find(block, std::byte{0}) - block.begin());
+        full_ = left_ == 254;
+        out[written++] = std::byte(left_ + 1);
+        step_ = Step::Block;
+        break;
+      }
+      case Step::Block: {
+        const std::size_t n = std::min(left_, out.size() - written);
+        std::ranges::copy(data.subspan(at_, n), out.begin() + written);
+        written += n;
+        at_ += n;
+        left_ -= n;
+        if (left_ > 0) {
+          break;
+        }
+        if (at_ == data.size()) {
+          step_ = Step::Delimiter;
+        } else {
+          // The zero the block's code stands for; a full block has none.
+          at_ += full_ ? 0 : 1;
+          step_ = Step::Code;
+        }
+        break;
+      }
+      case Step::Delimiter:
+        out[written++] = std::byte{0};
+        step_ = Step::Done;
+        break;
+      case Step::Done:
+        return written;
+    }
+  }
+  return written;
+}
+
 }  // namespace tether

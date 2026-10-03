@@ -10,6 +10,11 @@
 // Sans-IO: the caller feeds received bytes in, writes out what poll_transmit
 // returns, and passes the time in. next_deadline says when to call again if
 // nothing arrives first.
+//
+// Frames wait in the send queue as bodies (see write_body), and are
+// COBS-encoded a piece at a time as they go out, so a retransmit costs no
+// memory. A payload can be built in the queue itself (reserve and commit),
+// without a copy elsewhere first.
 
 #pragma once
 
@@ -83,22 +88,27 @@ struct LinkBuffers {
   // Frames as they arrive: its size bounds a frame's COBS-encoded size, and
   // it must be 8-aligned.
   std::span<std::byte> receive;
-  // Frames waiting to be sent, encoded, and the one in flight.
+  // Frames waiting to be sent, and the one in flight: each takes its body's
+  // size and 2 bytes. A payload built in it (see Link::reserve) needs room for
+  // the largest body, contiguous.
   std::span<std::byte> queue;
 };
 
 namespace detail {
 
-// Encoded frames in one buffer, oldest first, each as [size: u16][bytes].
+// Frame bodies in one buffer, oldest first, each as [size: u16][body].
 class FrameQueue {
  public:
-  explicit FrameQueue(std::span<std::byte> buffer) : buf_(buffer) {}
+  // Uses the buffer up to its last 8-aligned address, so that what's built at
+  // the end of space() is aligned.
+  explicit FrameQueue(std::span<std::byte> buffer);
 
   [[nodiscard]] bool empty() const { return head_ == tail_; }
   [[nodiscard]] std::size_t used() const { return tail_ - head_; }
+  [[nodiscard]] std::size_t capacity() const { return buf_.size(); }
 
-  // Where the next frame goes: all the room there is. Moves what's queued to
-  // the start of the buffer, invalidating views of it.
+  // Where the next body goes: all the room there is, ending 8-aligned. Moves
+  // what's queued to the start of the buffer, invalidating views of it.
   std::span<std::byte> space();
   // Queues the `size` bytes just written to space().
   void push(std::size_t size);
@@ -106,9 +116,9 @@ class FrameQueue {
   [[nodiscard]] std::span<const std::byte> front() const;
   void pop();
 
- private:
   static constexpr std::size_t kSizePrefix = 2;
 
+ private:
   std::span<std::byte> buf_;
   std::size_t head_ = 0;
   std::size_t tail_ = 0;
@@ -127,10 +137,19 @@ class Link {
   // The peer's boot id, once linked.
   [[nodiscard]] std::optional<uint32_t> peer_boot_id() const;
   [[nodiscard]] const LinkStats& stats() const { return stats_; }
+  [[nodiscard]] const LinkConfig& config() const { return config_; }
 
   // Queues a sequenced frame; frames queued before linking go out after.
   std::expected<void, SendError> send(const Header& header,
                                       std::span<const std::byte> payload);
+
+  // Memory in the send queue to build a payload of up to `size` bytes in, a
+  // multiple of 8; it ends 8-aligned, as a FlatBufferBuilder needs. Queue
+  // what's built with commit(), which must come before anything else is sent.
+  std::expected<std::span<std::byte>, SendError> reserve(std::size_t size);
+  // Queues a sequenced frame whose payload was built in the memory reserve()
+  // returned, and is somewhere in it.
+  void commit(const Header& header, std::span<const std::byte> payload);
 
   // Feeds bytes read from the peer at `now`. Each frame for the layer above
   // goes to `on_frame(const Frame&)`, exactly once and in order; its payload
@@ -145,8 +164,9 @@ class Link {
     }
   }
 
-  // The next bytes to write to the peer, if any are due at `now`; valid until
-  // the next call on the link. Call it until it returns nothing.
+  // The next bytes to write to the peer, if any are due at `now`: a frame, or
+  // a piece of one. Valid until the next call on the link. Call it until it
+  // returns nothing.
   std::optional<std::span<const std::byte>> poll_transmit(Millis now);
 
   // When poll_transmit next has something to send, unless something arrives
@@ -160,16 +180,23 @@ class Link {
   [[nodiscard]] Millis retransmit_timeout(std::size_t wire_size) const;
 
  private:
-  // Room for an Ack or a Hello, which aren't queued.
-  static constexpr std::size_t kUnsequencedSize = max_wire_size(32);
+  // Room for the body of an Ack or a Hello, which aren't queued.
+  static constexpr std::size_t kUnsequencedSize = max_body_size(32);
+  // The most poll_transmit returns at once.
+  static constexpr std::size_t kPieceSize = 128;
+
+  // What's going out, a piece at a time.
+  enum class Sending : uint8_t { Nothing, Unsequenced, Queued };
 
   std::optional<Frame> push(std::byte b, Millis now);
   std::optional<Frame> handle(const Frame& frame, Millis now);
   void handle_hello(std::span<const std::byte> payload);
-  std::span<const std::byte> unsequenced(const Header& header,
-                                         std::span<const std::byte> payload);
-  std::span<const std::byte> hello();
-  std::span<const std::byte> transmit(std::span<const std::byte> wire);
+  void unsequenced(const Header& header, std::span<const std::byte> payload);
+  void hello();
+  // Starts sending a frame, and returns its first piece.
+  std::span<const std::byte> transmit(Sending what);
+  // The next piece of what's being sent; nothing once it's all out.
+  std::optional<std::span<const std::byte>> next_piece();
 
   LinkConfig config_;
   uint32_t boot_id_;
@@ -194,6 +221,15 @@ class Link {
   bool hello_reply_due_ = false;
   std::optional<Millis> last_hello_at_;
   std::array<std::byte, kUnsequencedSize> unsequenced_{};
+  std::size_t unsequenced_size_ = 0;
+  // A payload is being built in the queue.
+  bool reserved_ = false;
+
+  Sending sending_ = Sending::Nothing;
+  CobsStream cobs_;
+  // The queue's front was acked while it was going out: it's popped once out.
+  bool pop_when_sent_ = false;
+  std::array<std::byte, kPieceSize> piece_{};
 
   // Receive side.
   Millis last_heard_at_{};
@@ -205,14 +241,15 @@ namespace detail {
 template <std::size_t ReceiveSize, std::size_t QueueSize>
 struct LinkStorage {
   alignas(8) std::array<std::byte, ReceiveSize> receive_buffer{};
-  std::array<std::byte, QueueSize> queue_buffer{};
+  alignas(8) std::array<std::byte, (QueueSize + 7) / 8 * 8> queue_buffer{};
 };
 
 // Buffers for payloads of up to `MaxPayload` bytes. The queue holds two frames
 // that large, or many more small ones.
 template <std::size_t MaxPayload>
-using LinkStorageFor = LinkStorage<max_wire_size(MaxPayload) - 1,
-                                   2 * (max_wire_size(MaxPayload) + 2)>;
+using LinkStorageFor =
+    LinkStorage<max_wire_size(MaxPayload) - 1,
+                2 * (FrameQueue::kSizePrefix + max_body_size(MaxPayload))>;
 
 }  // namespace detail
 

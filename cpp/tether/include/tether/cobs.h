@@ -41,4 +41,25 @@ class CobsEncoder {
   bool overflow_ = false;
 };
 
+// COBS-encodes one frame, delimiter included, a piece at a time: what's sent
+// is encoded from where it waits, without memory for its whole encoding. The
+// output is CobsEncoder's.
+class CobsStream {
+ public:
+  // The next piece of `data`'s encoding, into `out`: its size, or 0 once the
+  // delimiter is out. Pass the same `data` until then.
+  std::size_t next(std::span<const std::byte> data, std::span<std::byte> out);
+
+ private:
+  enum class Step : uint8_t { Code, Block, Delimiter, Done };
+
+  Step step_ = Step::Code;
+  // The next byte of `data` to encode.
+  std::size_t at_ = 0;
+  // What's left of the current block's bytes, and whether it's a full one,
+  // which ends without implying a zero.
+  std::size_t left_ = 0;
+  bool full_ = false;
+};
+
 }  // namespace tether

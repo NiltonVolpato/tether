@@ -57,16 +57,33 @@ struct Frame {
 // The largest size-prefixed Header: every field set.
 inline constexpr std::size_t kMaxHeaderSize = 64;
 
+// The most a frame's body, [CRC32][size-prefixed Header][pad to 8][payload],
+// holds before its payload.
+inline constexpr std::size_t kMaxBodyOverhead = 4 + kMaxHeaderSize + 7;
+
+// The largest body, the frame before COBS, for a payload of `payload_size`
+// bytes.
+[[nodiscard]] constexpr std::size_t max_body_size(std::size_t payload_size) {
+  return kMaxBodyOverhead + payload_size;
+}
+
 // The largest frame on the wire, delimiter included, for a payload of
 // `payload_size` bytes.
 [[nodiscard]] constexpr std::size_t max_wire_size(std::size_t payload_size) {
-  constexpr std::size_t kCrcAndPad = 4 + 7;
-  return cobs_max_size(kCrcAndPad + kMaxHeaderSize + payload_size) + 1;
+  return cobs_max_size(max_body_size(payload_size)) + 1;
 }
 
 // Encodes a frame into `out`, including the trailing 0x00 delimiter. Returns
 // its size, or `Overflow` if it doesn't fit; `max_wire_size` always does.
 [[nodiscard]] std::expected<std::size_t, FrameError> encode(
+    const Header& header, std::span<const std::byte> payload,
+    std::span<std::byte> out);
+
+// Lays out a frame's body at the start of `out`, ready for COBS. `payload` may
+// be in `out` already, wherever it is: it's moved before the rest is written.
+// Returns the body's size, or `Overflow` if it doesn't fit; `max_body_size`
+// always does.
+[[nodiscard]] std::expected<std::size_t, FrameError> write_body(
     const Header& header, std::span<const std::byte> payload,
     std::span<std::byte> out);
 

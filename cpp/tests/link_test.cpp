@@ -20,6 +20,7 @@ namespace {
 using namespace std::chrono_literals;
 using ::testing::ElementsAreArray;
 using ::testing::Eq;
+using ::testing::IsEmpty;
 using ::testing::Optional;
 
 constexpr std::size_t kMaxPayload = 256;
@@ -147,10 +148,20 @@ class Sim {
   }
 
  private:
+  // Whole frames, so that the pipe's losses are per frame, however many
+  // pieces they go out in.
   static void transmit(End& end, Pipe& out, Millis now) {
+    std::vector<std::byte> frame;
     while (const auto wire = end.link->poll_transmit(now)) {
-      out.push(now, *wire);
+      for (const std::byte b : *wire) {
+        frame.push_back(b);
+        if (b == std::byte{0}) {
+          out.push(now, frame);
+          frame.clear();
+        }
+      }
     }
+    EXPECT_THAT(frame, IsEmpty()) << "a frame went out in part";
   }
 
   static void receive(End& end, Pipe& in, Millis now) {
@@ -326,6 +337,121 @@ TEST(Link, QueueHoldsManySmallFramesAndReportsFull) {
   TestLink small(3);
   EXPECT_THAT(small.send({.kind = Kind::Item}, payload_of(4 * kMaxPayload, 1)),
               Eq(std::unexpected(SendError::TooLarge)));
+}
+
+// All the bytes `link` has to send at `now`.
+std::vector<std::byte> drain(Link& link, Millis now) {
+  std::vector<std::byte> out;
+  while (const auto wire = link.poll_transmit(now)) {
+    out.insert(out.end(), wire->begin(), wire->end());
+  }
+  return out;
+}
+
+// Two ends, linked; no time passes.
+struct Pair {
+  Pair() {
+    while (a.state() != LinkState::Linked || b.state() != LinkState::Linked) {
+      b.receive(drain(a, now), now, [](const Frame&) {});
+      a.receive(drain(b, now), now, [](const Frame&) {});
+    }
+  }
+
+  // Moves bytes both ways until nothing more is due, recording what `b`
+  // receives.
+  void exchange() {
+    for (;;) {
+      const auto a2b = drain(a, now);
+      const auto b2a = drain(b, now);
+      if (a2b.empty() && b2a.empty()) {
+        return;
+      }
+      b.receive(a2b, now, [&](const Frame& f) {
+        received.push_back({.header = f.header,
+                            .payload = {f.payload.begin(), f.payload.end()}});
+      });
+      a.receive(b2a, now, [](const Frame&) {});
+    }
+  }
+
+  TestLink a{0xA1};
+  TestLink b{0xB1};
+  Millis now{0};
+  std::vector<Received> received;
+};
+
+TEST(Link, BuildsAPayloadInTheQueue) {
+  Pair pair;
+  const auto memory = pair.a.reserve(kMaxPayload);
+  ASSERT_TRUE(memory);
+  ASSERT_THAT(memory->size(), Eq(kMaxPayload));
+  EXPECT_THAT(
+      reinterpret_cast<std::uintptr_t>(memory->data() + kMaxPayload) % 8,
+      Eq(0U));
+  // At the end, as a FlatBufferBuilder builds.
+  const auto payload = payload_of(40, 3);
+  std::ranges::copy(payload, memory->end() - 40);
+  pair.a.commit({.kind = Kind::Item, .call_id = 9}, memory->last(40));
+  ASSERT_TRUE(pair.a.send({.kind = Kind::Item, .call_id = 10}, {}));
+
+  pair.exchange();
+  ASSERT_THAT(pair.received.size(), Eq(2U));
+  EXPECT_THAT(pair.received[0].header.call_id, Eq(9U));
+  EXPECT_THAT(pair.received[0].payload, ElementsAreArray(payload));
+  EXPECT_THAT(pair.received[1].header.call_id, Eq(10U));
+}
+
+TEST(Link, ReservesOnlyWithRoomForTheLargestBody) {
+  TestLink link(1);
+  EXPECT_THAT(link.reserve(4 * kMaxPayload),
+              Eq(std::unexpected(SendError::TooLarge)));
+  // One frame as large as can be, and there's room for one more.
+  ASSERT_TRUE(link.send({.kind = Kind::Item}, payload_of(kMaxPayload, 1)));
+  const auto memory = link.reserve(kMaxPayload);
+  ASSERT_TRUE(memory);
+  link.commit({.kind = Kind::Item}, *memory);
+  // Then not for a large one, though what's built might be small.
+  EXPECT_THAT(link.reserve(kMaxPayload),
+              Eq(std::unexpected(SendError::QueueFull)));
+  EXPECT_TRUE(link.reserve(8));
+}
+
+TEST(LinkDeathTest, SendingWhileBuildingAborts) {
+  TestLink link(1);
+  ASSERT_TRUE(link.reserve(64));
+  EXPECT_DEATH((void)link.send({.kind = Kind::Item}, {}), "");
+  EXPECT_DEATH((void)link.reserve(64), "");
+  TestLink other(2);
+  EXPECT_DEATH(other.commit({.kind = Kind::Item}, {}), "");
+  EXPECT_DEATH((void)other.reserve(12), "");
+}
+
+TEST(Link, AnAckDuringARetransmitWaitsForItToGoOut) {
+  Pair pair;
+  ASSERT_TRUE(pair.a.send({.kind = Kind::Item, .call_id = 1},
+                          payload_of(kMaxPayload, 1)));
+  const auto first = drain(pair.a, pair.now);
+  ASSERT_GT(first.size(), 128U) << "goes out in pieces";
+  pair.b.receive(first, pair.now, [](const Frame&) {});
+  // The ack is late: the frame goes out again.
+  const auto ack = drain(pair.b, pair.now);
+  pair.now = *pair.a.next_deadline();
+  const auto piece = pair.a.poll_transmit(pair.now);
+  ASSERT_TRUE(piece);
+  std::vector<std::byte> again(piece->begin(), piece->end());
+  pair.a.receive(ack, pair.now, [](const Frame&) {});
+  // The rest of it, as it was: what's being written stays put.
+  const auto rest = drain(pair.a, pair.now);
+  again.insert(again.end(), rest.begin(), rest.end());
+  EXPECT_THAT(again, ElementsAreArray(first));
+
+  // And then it's gone: the next frame is next.
+  pair.b.receive(again, pair.now, [](const Frame&) {});
+  EXPECT_THAT(pair.b.stats().duplicates, Eq(1U));
+  ASSERT_TRUE(pair.a.send({.kind = Kind::Item, .call_id = 2}, {}));
+  pair.exchange();
+  ASSERT_THAT(pair.received.size(), Eq(1U));
+  EXPECT_THAT(pair.received[0].header.call_id, Eq(2U));
 }
 
 }  // namespace

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <cstring>
 
 #include "arena.h"
 #include "tether/crc32.h"
@@ -28,12 +29,11 @@ std::array<std::byte, 4> le32(uint32_t v) {
           std::byte(v >> 24)};
 }
 
-}  // namespace
+constexpr std::array<std::byte, kPayloadAlign - 1> kZeros{};
 
-std::expected<std::size_t, FrameError> encode(
-    const Header& header, std::span<const std::byte> payload,
-    std::span<std::byte> out) {
-  HeaderArena arena;
+// `header` as a size-prefixed flatbuffer, built in `arena`.
+std::span<const std::byte> build_header(const Header& header,
+                                        HeaderArena& arena) {
   flatbuffers::FlatBufferBuilder fbb(HeaderArena::kSize, &arena);
   fbb.FinishSizePrefixed(wire::CreateHeader(
       fbb, header.kind, header.seq, header.call_id, header.service,
@@ -43,13 +43,48 @@ std::expected<std::size_t, FrameError> encode(
   if (fb_header.size() > kMaxHeaderSize) {
     std::abort();  // max_wire_size would be wrong.
   }
+  // In the arena, which the builder leaves alone.
+  return fb_header;
+}
 
-  constexpr std::array<std::byte, kPayloadAlign - 1> kZeros{};
-  const std::size_t header_end = kCrcSize + fb_header.size();
-  const auto pad = std::span(kZeros).first(
+// The zeros between a header ending at `header_end` and the payload.
+std::span<const std::byte> padding(std::size_t header_end,
+                                   std::span<const std::byte> payload) {
+  return std::span(kZeros).first(
       payload.empty()
           ? 0
           : (kPayloadAlign - header_end % kPayloadAlign) % kPayloadAlign);
+}
+
+}  // namespace
+
+std::expected<std::size_t, FrameError> write_body(
+    const Header& header, std::span<const std::byte> payload,
+    std::span<std::byte> out) {
+  HeaderArena arena;
+  const auto fb_header = build_header(header, arena);
+  const auto pad = padding(kCrcSize + fb_header.size(), payload);
+  const std::size_t payload_at = kCrcSize + fb_header.size() + pad.size();
+  if (payload_at + payload.size() > out.size()) {
+    return std::unexpected(FrameError::Overflow);
+  }
+  // First, as the rest may overwrite where it is.
+  if (!payload.empty()) {
+    std::memmove(out.data() + payload_at, payload.data(), payload.size());
+  }
+  std::ranges::copy(fb_header, out.begin() + kCrcSize);
+  std::ranges::copy(pad, out.begin() + kCrcSize + fb_header.size());
+  const auto body = out.first(payload_at + payload.size());
+  std::ranges::copy(le32(Crc32::of(body.subspan(kCrcSize))), body.begin());
+  return body.size();
+}
+
+std::expected<std::size_t, FrameError> encode(
+    const Header& header, std::span<const std::byte> payload,
+    std::span<std::byte> out) {
+  HeaderArena arena;
+  const auto fb_header = build_header(header, arena);
+  const auto pad = padding(kCrcSize + fb_header.size(), payload);
 
   Crc32 crc;
   crc.update(fb_header);

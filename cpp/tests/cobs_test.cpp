@@ -109,5 +109,52 @@ TEST(Cobs, ReportsOverflow) {
   EXPECT_THAT(encoder.finish(), Eq(std::nullopt));
 }
 
+// The encoding of `data`, by a CobsStream in pieces of at most `piece` bytes.
+std::vector<std::byte> stream(std::span<const std::byte> data,
+                              std::size_t piece) {
+  CobsStream cobs;
+  std::vector<std::byte> out;
+  std::vector<std::byte> buf(piece);
+  while (const std::size_t n = cobs.next(data, buf)) {
+    out.insert(out.end(), buf.begin(), buf.begin() + n);
+  }
+  EXPECT_THAT(cobs.next(data, buf), Eq(0U));
+  return out;
+}
+
+TEST(Cobs, StreamEncodesAsTheEncoderInPiecesOfAnySize) {
+  std::vector<std::vector<std::byte>> inputs = {
+      {},
+      bytes({0}),
+      bytes({0, 0}),
+      bytes({0x11, 0x22, 0x00, 0x33}),
+      run(253, 1),
+      run(254, 1),
+      run(255, 1),
+      concat({run(254, 0xA5), bytes({0x00})}),
+      concat({run(254, 0xA5), bytes({0x00, 0x00})}),
+      run(600, 7),
+  };
+  // Zeros at random, densely and sparsely.
+  uint32_t state = 1;
+  for (const uint32_t one_in : {2U, 7U, 300U}) {
+    std::vector<std::byte> data;
+    for (int i = 0; i < 1000; ++i) {
+      state = state * 1664525U + 1013904223U;
+      data.push_back((state >> 16) % one_in == 0 ? std::byte{0}
+                                                 : std::byte(state >> 24 | 1));
+    }
+    inputs.push_back(data);
+  }
+  for (const auto& input : inputs) {
+    SCOPED_TRACE(input.size());
+    const auto expected = encode(input);
+    for (const std::size_t piece : {1U, 2U, 3U, 64U, 255U, 256U, 2000U}) {
+      SCOPED_TRACE(piece);
+      EXPECT_THAT(stream(input, piece), ElementsAreArray(expected));
+    }
+  }
+}
+
 }  // namespace
 }  // namespace tether

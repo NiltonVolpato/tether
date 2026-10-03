@@ -52,6 +52,45 @@ TEST(Frame, RoundTripsWithAlignedPayloadForEveryPadding) {
   }
 }
 
+// The body is what encode() COBS-encodes, wherever the payload starts out.
+TEST(Frame, BodyIsTheFrameBeforeCobs) {
+  for (const std::size_t size : {0, 1, 7, 8, 9, 300}) {
+    SCOPED_TRACE(size);
+    const auto payload = payload_of(size);
+    std::vector<std::byte> wire(max_wire_size(size));
+    const auto wire_size = encode(kMaxHeader, payload, wire);
+    ASSERT_TRUE(wire_size);
+    wire.resize(*wire_size);
+
+    // The payload starts elsewhere, at the start of the body's memory, or at
+    // its end (where a flatbuffer is built).
+    for (const int where : {0, 1, 2}) {
+      SCOPED_TRACE(where);
+      std::vector<std::byte> body(max_body_size(size));
+      std::span<const std::byte> from = payload;
+      if (where > 0) {
+        const std::size_t at = where == 1 ? 0 : body.size() - size;
+        std::ranges::copy(payload, body.begin() + at);
+        from = std::span(body).subspan(at, size);
+      }
+      const auto body_size = write_body(kMaxHeader, from, body);
+      ASSERT_TRUE(body_size);
+      std::vector<std::byte> encoded(max_wire_size(size));
+      CobsEncoder cobs(encoded);
+      cobs.write(std::span(body).first(*body_size));
+      ASSERT_THAT(cobs.finish(), Eq(wire.size()));
+      encoded.resize(wire.size());
+      EXPECT_THAT(encoded, ElementsAreArray(wire));
+    }
+  }
+  std::vector<std::byte> body(max_body_size(8));
+  const auto size = write_body(kMaxHeader, payload_of(8), body);
+  ASSERT_TRUE(size);
+  EXPECT_THAT(
+      write_body(kMaxHeader, payload_of(8), std::span(body).first(*size - 1)),
+      Eq(std::unexpected(FrameError::Overflow)));
+}
+
 // Payloads without zeros cost COBS the most.
 TEST(Frame, MaxWireSizeIsEnough) {
   for (std::size_t size = 0; size <= 1100; ++size) {

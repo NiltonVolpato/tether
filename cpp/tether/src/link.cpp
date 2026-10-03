@@ -22,6 +22,13 @@ uint16_t prev(uint16_t seq) {
 
 namespace detail {
 
+FrameQueue::FrameQueue(std::span<std::byte> buffer) {
+  const auto end =
+      reinterpret_cast<std::uintptr_t>(buffer.data()) + buffer.size();
+  buf_ = buffer.first(buffer.size() -
+                      std::min<std::size_t>(end % 8, buffer.size()));
+}
+
 std::span<std::byte> FrameQueue::space() {
   if (empty()) {
     head_ = tail_ = 0;
@@ -72,10 +79,13 @@ std::optional<uint32_t> Link::peer_boot_id() const {
 
 std::expected<void, SendError> Link::send(const Header& header,
                                           std::span<const std::byte> payload) {
+  if (reserved_) {
+    std::abort();  // A payload is being built in the queue: commit it first.
+  }
   const bool was_empty = queue_.empty();
   Header sequenced = header;
   sequenced.seq = next_seq_;
-  const auto size = encode(sequenced, payload, queue_.space());
+  const auto size = write_body(sequenced, payload, queue_.space());
   if (!size) {
     return std::unexpected(was_empty ? SendError::TooLarge
                                      : SendError::QueueFull);
@@ -86,21 +96,59 @@ std::expected<void, SendError> Link::send(const Header& header,
   return {};
 }
 
+std::expected<std::span<std::byte>, SendError> Link::reserve(std::size_t size) {
+  if (reserved_ || size % 8 != 0) {
+    std::abort();
+  }
+  const std::size_t needed =
+      detail::FrameQueue::kSizePrefix + max_body_size(size);
+  if (needed > queue_.capacity()) {
+    return std::unexpected(SendError::TooLarge);
+  }
+  // The payload is built at the end, which is aligned, and moved into place
+  // when it's committed.
+  const auto space = queue_.space();
+  if (space.size() < max_body_size(size)) {
+    return std::unexpected(SendError::QueueFull);
+  }
+  reserved_ = true;
+  return space.last(size);
+}
+
+void Link::commit(const Header& header, std::span<const std::byte> payload) {
+  if (!reserved_) {
+    std::abort();
+  }
+  reserved_ = false;
+  // Can't fail: space() is as it was, and had room for the largest body.
+  if (!send(header, payload)) {
+    std::abort();
+  }
+}
+
 std::optional<std::span<const std::byte>> Link::poll_transmit(Millis now) {
   now_ = now;
   if (is_terminal(state_)) {
     return std::nullopt;
   }
+  // A frame goes out whole before anything else does.
+  if (sending_ != Sending::Nothing) {
+    if (const auto piece = next_piece()) {
+      return piece;
+    }
+  }
   if (ack_due_) {
     const Header ack{.kind = Kind::Ack, .seq = *std::exchange(ack_due_, {})};
-    return transmit(unsequenced(ack, {}));
+    unsequenced(ack, {});
+    return transmit(Sending::Unsequenced);
   }
   const bool hello_due =
       state_ == LinkState::Connecting &&
       (!last_hello_at_ || now >= *last_hello_at_ + config_.hello_interval);
   if (std::exchange(hello_reply_due_, false) || hello_due) {
     last_hello_at_ = now;
-    return transmit(hello());
+    hello();
+    return transmit(Sending::Unsequenced);
   }
   if (state_ != LinkState::Linked) {
     return std::nullopt;
@@ -116,7 +164,7 @@ std::optional<std::span<const std::byte>> Link::poll_transmit(Millis now) {
     sent_at_ = now;
     ++retransmits_;
     ++stats_.retransmits;
-    return transmit(queue_.front());
+    return transmit(Sending::Queued);
   }
   if (queue_.empty() && now >= last_heard_at_ + config_.ping_interval) {
     ++stats_.pings;
@@ -128,16 +176,17 @@ std::optional<std::span<const std::byte>> Link::poll_transmit(Millis now) {
   }
   in_flight_ = true;
   sent_at_ = now;
-  timeout_ = retransmit_timeout(queue_.front().size());
+  // At most this long once encoded.
+  timeout_ = retransmit_timeout(cobs_max_size(queue_.front().size()) + 1);
   retransmits_ = 0;
-  return transmit(queue_.front());
+  return transmit(Sending::Queued);
 }
 
 std::optional<Millis> Link::next_deadline() const {
   if (is_terminal(state_)) {
     return std::nullopt;
   }
-  if (ack_due_ || hello_reply_due_) {
+  if (sending_ != Sending::Nothing || ack_due_ || hello_reply_due_) {
     return now_;
   }
   if (state_ == LinkState::Connecting) {
@@ -200,7 +249,13 @@ std::optional<Frame> Link::handle(const Frame& frame, Millis now) {
   if (frame.header.kind == Kind::Ack) {
     if (in_flight_ && seq == oldest_seq_) {
       in_flight_ = false;
-      queue_.pop();
+      // An ack of an earlier transmission, while it's retransmitted: what's
+      // being written still comes from the queue.
+      if (sending_ == Sending::Queued) {
+        pop_when_sent_ = true;
+      } else {
+        queue_.pop();
+      }
       oldest_seq_ = next(oldest_seq_);
     }
     return std::nullopt;
@@ -263,28 +318,46 @@ void Link::handle_hello(std::span<const std::byte> payload) {
   }
 }
 
-std::span<const std::byte> Link::unsequenced(
-    const Header& header, std::span<const std::byte> payload) {
-  const auto size = encode(header, payload, unsequenced_);
+void Link::unsequenced(const Header& header,
+                       std::span<const std::byte> payload) {
+  const auto size = write_body(header, payload, unsequenced_);
   if (!size) {
     std::abort();  // kUnsequencedSize is too small.
   }
-  return std::span(unsequenced_).first(*size);
+  unsequenced_size_ = *size;
 }
 
-std::span<const std::byte> Link::hello() {
+void Link::hello() {
   detail::ArenaAllocator<64> arena;
   flatbuffers::FlatBufferBuilder fbb(decltype(arena)::kSize, &arena);
   const uint32_t peer = state_ == LinkState::Linked ? peer_boot_id_ : 0;
   fbb.Finish(wire::CreateHello(fbb, boot_id_, peer));
-  return unsequenced(
-      {.kind = Kind::Hello},
-      std::as_bytes(std::span(fbb.GetBufferPointer(), fbb.GetSize())));
+  unsequenced({.kind = Kind::Hello},
+              std::as_bytes(std::span(fbb.GetBufferPointer(), fbb.GetSize())));
 }
 
-std::span<const std::byte> Link::transmit(std::span<const std::byte> wire) {
+std::span<const std::byte> Link::transmit(Sending what) {
   ++stats_.frames_tx;
-  return wire;
+  sending_ = what;
+  cobs_ = {};
+  // A frame is never empty: there's at least its CRC.
+  return *next_piece();
+}
+
+std::optional<std::span<const std::byte>> Link::next_piece() {
+  const auto body =
+      sending_ == Sending::Queued
+          ? queue_.front()
+          : std::span<const std::byte>(unsequenced_).first(unsequenced_size_);
+  const std::size_t n = cobs_.next(body, piece_);
+  if (n > 0) {
+    return std::span(piece_).first(n);
+  }
+  sending_ = Sending::Nothing;
+  if (std::exchange(pop_when_sent_, false)) {
+    queue_.pop();
+  }
+  return std::nullopt;
 }
 
 }  // namespace tether
