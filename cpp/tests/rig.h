@@ -11,6 +11,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <span>
 #include <utility>
 #include <vector>
@@ -115,6 +116,14 @@ class Rig {
   }
 
   void cancel(uint32_t call) { send({.kind = Kind::Cancel, .call_id = call}); }
+
+  // The client starts over, with a new boot id, and links to the server.
+  void reboot_client(uint32_t boot_id) {
+    std::destroy_at(&client);
+    std::construct_at(&client, boot_id);
+    received.clear();
+    pump();
+  }
 
   // What the client received since the last call.
   std::vector<Received> take() { return std::exchange(received, {}); }

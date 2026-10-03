@@ -7,8 +7,9 @@
 // table, so a call that finds it full is rejected with RESOURCE_EXHAUSTED.
 //
 // Sans-IO, like the link: feed received bytes in, write out what
-// poll_transmit returns, and call again at next_deadline. Everything here,
-// replies and sinks included, must run on one thread.
+// poll_transmit returns, and call again at next_deadline. On its own it's for
+// one thread; with ServerHooks (which the platform's glue implements, e.g.
+// tether_idf), replies and sinks can be used from any thread.
 
 #pragma once
 
@@ -16,8 +17,11 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <functional>
+#include <memory>
 #include <optional>
 #include <span>
+#include <type_traits>
 
 #include "tether/descriptor.h"
 #include "tether/link.h"
@@ -37,31 +41,73 @@ enum class CallError : uint8_t {
   TooLarge,
 };
 
+namespace detail {
+
+// A callable passed without a template or the heap: valid while the callable
+// is, so only as a parameter.
+template <typename Signature>
+class FunctionRef;
+
+template <typename R, typename... Args>
+class FunctionRef<R(Args...)> {
+ public:
+  template <typename F>
+    requires std::is_invocable_r_v<R, F&, Args...> &&
+                 (!std::is_same_v<std::remove_cvref_t<F>, FunctionRef>)
+  // NOLINTNEXTLINE(bugprone-forwarding-reference-overload): constrained above.
+  FunctionRef(F&& f)  // NOLINT(google-explicit-constructor): a parameter type.
+      : object_(const_cast<void*>(static_cast<const void*>(std::addressof(f)))),
+        call_([](void* object, Args... args) -> R {
+          return std::invoke(*static_cast<std::remove_reference_t<F>*>(object),
+                             std::forward<Args>(args)...);
+        }) {}
+
+  R operator()(Args... args) const {
+    return call_(object_, std::forward<Args>(args)...);
+  }
+
+ private:
+  void* object_;
+  R (*call_)(void*, Args...);
+};
+
+}  // namespace detail
+
+// Builds a payload in the memory it's given (8-aligned at both ends), and
+// returns it: a part of that memory. The typed layer builds flatbuffers with
+// one (see typed.h).
+using MessageBuilder =
+    detail::FunctionRef<std::span<const std::byte>(std::span<std::byte>)>;
+
 class Server;
 
 // Answers one unary call, at most once. A cheap handle: copies answer the same
-// call, and only the first answer is sent.
+// call, and only the first answer is sent. It outlives its call safely: once
+// the call is over, or the server restarted, it's Closed.
 class RawReply {
  public:
   [[nodiscard]] CallId call_id() const { return CallId{call_}; }
-
-  // Memory to build a message in, for as long as nothing else on the server
-  // uses it (see typed.h): the size of the largest payload.
-  [[nodiscard]] std::span<std::byte> scratch() const;
 
   // `Closed` if the client cancelled meanwhile. `QueueFull` leaves the call
   // open, to answer again later.
   [[nodiscard]] std::expected<void, CallError> send(
       std::span<const std::byte> response) const;
+  // As send, with the response built in the send queue by `build`: it gets
+  // the server's largest payload's worth of memory. Nothing else can be sent
+  // while it runs, from any thread: a send from inside it aborts.
+  [[nodiscard]] std::expected<void, CallError> send_built(
+      MessageBuilder build) const;
   // Answers with an error. `status` must not be OK: that's answered as
   // INTERNAL, a handler bug.
   [[nodiscard]] std::expected<void, CallError> fail(WireStatus status) const;
 
  private:
   friend class Server;
-  RawReply(Server& server, uint32_t call) : server_(&server), call_(call) {}
+  RawReply(Server& server, uint32_t epoch, uint32_t call)
+      : server_(&server), epoch_(epoch), call_(call) {}
 
   Server* server_;
+  uint32_t epoch_;
   uint32_t call_;
 };
 
@@ -70,12 +116,12 @@ class RawSink {
  public:
   [[nodiscard]] CallId call_id() const { return CallId{call_}; }
 
-  // As RawReply::scratch.
-  [[nodiscard]] std::span<std::byte> scratch() const;
-
   // Uses one credit; `NoCredit` until the client consumes earlier items.
   [[nodiscard]] std::expected<void, CallError> send(
       std::span<const std::byte> item) const;
+  // As send, with the item built in the send queue (see RawReply::send_built).
+  [[nodiscard]] std::expected<void, CallError> send_built(
+      MessageBuilder build) const;
   // Latest-value mode: sends now if there's credit and room in the send
   // queue; otherwise keeps `item` for when there is, replacing whatever value
   // was waiting, so the client sees the newest and skips the ones in between.
@@ -83,6 +129,10 @@ class RawSink {
   // buffer (see StaticServer), which a value that can go now needn't.
   [[nodiscard]] std::expected<void, CallError> set_latest(
       std::span<const std::byte> item) const;
+  // As set_latest, with the value built in the channel's latest-value buffer,
+  // whether it waits or not: one larger than that aborts.
+  [[nodiscard]] std::expected<void, CallError> set_latest_built(
+      MessageBuilder build) const;
   // Items that can be sent right now; 0 once closed.
   [[nodiscard]] uint16_t credit() const;
   // Closes the channel, dropping a value still waiting for credit. `QueueFull`
@@ -92,9 +142,11 @@ class RawSink {
 
  private:
   friend class Server;
-  RawSink(Server& server, uint32_t call) : server_(&server), call_(call) {}
+  RawSink(Server& server, uint32_t epoch, uint32_t call)
+      : server_(&server), epoch_(epoch), call_(call) {}
 
   Server* server_;
+  uint32_t epoch_;
   uint32_t call_;
 };
 
@@ -112,6 +164,21 @@ class Dispatcher {
 
  protected:
   ~Dispatcher() = default;
+};
+
+// Lets threads share a server: the platform's glue implements it (e.g.
+// tether_idf, over FreeRTOS).
+class ServerHooks {
+ public:
+  // Every call into the server holds the lock, the dispatcher's included, and
+  // handlers use replies and sinks there: it must be recursive.
+  virtual void lock() = 0;
+  virtual void unlock() = 0;
+  // Something was queued to send: wake the I/O loop, if it's waiting.
+  virtual void wake() = 0;
+
+ protected:
+  ~ServerHooks() = default;
 };
 
 // An open call: waiting for its response, or a channel.
@@ -141,25 +208,36 @@ struct ServerBuffers {
   LinkBuffers link;
   // A call per slot.
   std::span<CallSlot> slots;
-  // Shared equally by the slots, for values waiting in RawSink::set_latest.
+  // Shared equally by the slots, for values waiting in RawSink::set_latest;
+  // 8-aligned.
   std::span<std::byte> latest;
-  // For building messages in: 8-aligned, and as large as the largest payload.
-  std::span<std::byte> scratch;
+};
+
+struct ServerLimits {
+  // The largest payload a reply or an item is built to, a multiple of 8: a
+  // build starts only with room for a body this large in the send queue,
+  // contiguous, and one that outgrows it aborts.
+  std::size_t max_payload = 0;
+  // At most this many channels are open at once.
+  std::size_t max_streams = 0;
 };
 
 class Server {
  public:
-  // At most `max_streams` channels are open at once.
   Server(uint32_t boot_id, const LinkConfig& config, ServerBuffers buffers,
-         std::size_t max_streams);
+         ServerLimits limits);
   Server(const Server&) = delete;
   Server& operator=(const Server&) = delete;
 
-  // Where calls go; without one, they're all UNIMPLEMENTED.
+  // Where calls go; without one, they're all UNIMPLEMENTED. Set up before
+  // serving, as are the hooks.
   void set_dispatcher(Dispatcher& dispatcher) { dispatcher_ = &dispatcher; }
+  void set_hooks(ServerHooks& hooks) { hooks_ = &hooks; }
 
+  // Not locked: for the I/O loop's thread, which is the one that changes them.
   [[nodiscard]] const Link& link() const { return link_; }
   [[nodiscard]] const ServerStats& stats() const { return stats_; }
+
   [[nodiscard]] std::size_t open_calls() const;
 
   // Feeds bytes read from the peer at `now`. Calls reach the dispatcher from
@@ -171,16 +249,40 @@ class Server {
   std::optional<std::span<const std::byte>> poll_transmit(Millis now);
 
   // See Link::next_deadline.
-  [[nodiscard]] std::optional<Millis> next_deadline() const {
-    return link_.next_deadline();
-  }
+  [[nodiscard]] std::optional<Millis> next_deadline() const;
+
+  // Starts over with a new link, once the old one is down for good (or to
+  // drop it): open calls are cancelled, and replies and sinks from before stay
+  // closed. `boot_id` as for the Link.
+  void restart(uint32_t boot_id);
 
  private:
   friend class RawReply;
   friend class RawSink;
 
+  // Holds the hooks' lock, if there are hooks.
+  class Guard {
+   public:
+    explicit Guard(const Server& server) : hooks_(server.hooks_) {
+      if (hooks_ != nullptr) {
+        hooks_->lock();
+      }
+    }
+    ~Guard() {
+      if (hooks_ != nullptr) {
+        hooks_->unlock();
+      }
+    }
+    Guard(const Guard&) = delete;
+    Guard& operator=(const Guard&) = delete;
+
+   private:
+    ServerHooks* hooks_;
+  };
+
   CallSlot* find(uint32_t call);
-  CallSlot* find(uint32_t call, CallSlot::State state);
+  // The slot of a handle's call, if it's still open and in that state.
+  CallSlot* find(uint32_t epoch, uint32_t call, CallSlot::State state);
   [[nodiscard]] std::size_t streams() const;
 
   void dispatch(const Frame& frame);
@@ -192,51 +294,69 @@ class Server {
   void reject(uint32_t call, bool streaming, WireStatus status);
   // Once the link is down for good, cancels every open call.
   void check_link();
+  void cancel_all();
 
+  // Queues a frame with `payload`, or with what `build` builds in the queue.
   std::expected<void, CallError> queue(const Header& header,
                                        std::span<const std::byte> payload);
-  std::expected<void, CallError> respond(uint32_t call, WireStatus status,
-                                         std::span<const std::byte> payload);
-  std::expected<void, CallError> send_item(uint32_t call,
-                                           std::span<const std::byte> item);
-  std::expected<void, CallError> set_latest(uint32_t call,
+  std::expected<void, CallError> queue(const Header& header,
+                                       MessageBuilder build);
+  // Runs `build` in `memory`. Aborts if a build is under way already.
+  std::span<const std::byte> run_build(MessageBuilder build,
+                                       std::span<std::byte> memory);
+
+  template <typename Payload>
+  std::expected<void, CallError> respond(uint32_t epoch, uint32_t call,
+                                         WireStatus status, Payload payload);
+  template <typename Payload>
+  std::expected<void, CallError> send_item(uint32_t epoch, uint32_t call,
+                                           Payload item);
+  std::expected<void, CallError> set_latest(uint32_t epoch, uint32_t call,
                                             std::span<const std::byte> item);
-  std::expected<void, CallError> end_stream(uint32_t call, WireStatus status);
-  uint16_t credit(uint32_t call);
+  std::expected<void, CallError> set_latest_built(uint32_t epoch, uint32_t call,
+                                                  MessageBuilder build);
+  std::expected<void, CallError> end_stream(uint32_t epoch, uint32_t call,
+                                            WireStatus status);
+  uint16_t credit(uint32_t epoch, uint32_t call);
   // Sends a slot's waiting value, if there's credit and room.
   void flush_latest(CallSlot& slot);
-  // The slot's part of the latest-value memory.
+  // The slot's part of the latest-value memory: 8-aligned at both ends.
   [[nodiscard]] std::span<std::byte> latest_buffer(const CallSlot& slot) const;
 
+  LinkBuffers link_buffers_;
   Link link_;
   std::span<CallSlot> slots_;
   std::span<std::byte> latest_;
-  std::span<std::byte> scratch_;
-  std::size_t max_streams_;
+  ServerLimits limits_;
   Dispatcher* dispatcher_ = nullptr;
+  ServerHooks* hooks_ = nullptr;
   ServerStats stats_{};
+  // Counts restarts: a handle from an earlier link is closed.
+  uint32_t epoch_ = 0;
+  bool building_ = false;
 };
 
 namespace detail {
 
-template <std::size_t Slots, std::size_t Latest, std::size_t Scratch>
+template <std::size_t Slots, std::size_t Latest>
 struct CallStorage {
   std::array<CallSlot, Slots> slots{};
-  std::array<std::byte, Slots * Latest> latest{};
-  alignas(8) std::array<std::byte, (Scratch + 7) / 8 * 8> scratch{};
+  alignas(8) std::array<std::byte, Slots*((Latest + 7) / 8 * 8)> latest{};
 };
 
 }  // namespace detail
 
-// A Server with its own memory, for payloads of up to `MaxPayload` bytes and
-// `MaxCalls` open calls at a time. A channel can have a latest value of up to
-// `MaxLatest` bytes waiting (none by default): that much for every call slot.
+// A Server with its own memory, for payloads of up to `MaxPayload` bytes (a
+// multiple of 8) and `MaxCalls` open calls at a time. A channel can have a
+// latest value of up to `MaxLatest` bytes waiting (none by default): that much
+// for every call slot.
 template <std::size_t MaxPayload, std::size_t MaxCalls,
           std::size_t MaxLatest = 0>
-class StaticServer
-    : private detail::LinkStorageFor<MaxPayload>,
-      private detail::CallStorage<MaxCalls, MaxLatest, MaxPayload>,
-      public Server {
+class StaticServer : private detail::LinkStorageFor<MaxPayload>,
+                     private detail::CallStorage<MaxCalls, MaxLatest>,
+                     public Server {
+  static_assert(MaxPayload % 8 == 0, "MaxPayload must be a multiple of 8");
+
  public:
   explicit StaticServer(uint32_t boot_id, const LinkConfig& config = {},
                         std::size_t max_streams = MaxCalls)
@@ -244,9 +364,8 @@ class StaticServer
                {.link = {.receive = this->receive_buffer,
                          .queue = this->queue_buffer},
                 .slots = this->slots,
-                .latest = this->latest,
-                .scratch = this->scratch},
-               max_streams) {}
+                .latest = this->latest},
+               {.max_payload = MaxPayload, .max_streams = max_streams}) {}
 };
 
 }  // namespace tether

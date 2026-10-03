@@ -23,6 +23,7 @@ using ::testing::ElementsAre;
 using ::testing::ElementsAreArray;
 using ::testing::Eq;
 using ::testing::IsEmpty;
+using ::testing::Optional;
 using ::testing::SizeIs;
 using namespace tether::testing;
 
@@ -460,16 +461,23 @@ TEST(ServerWithoutDispatcher, EverythingIsUnimplemented) {
 }
 
 TEST(ServerQueue, RejectionsThatDontFitAreCounted) {
-  // A send queue with room for one small frame, and no dispatcher to answer.
+  // A send queue with room for one rejection, and no dispatcher to answer.
+  std::array<std::byte, max_body_size(0)> body{};
+  const auto rejection = write_body({.kind = Kind::Response,
+                                     .seq = 1,
+                                     .call_id = 1,
+                                     .status = WireStatus::UNIMPLEMENTED},
+                                    {}, body);
+  ASSERT_TRUE(rejection);
   alignas(8) std::array<std::byte, max_wire_size(32) - 1> rx{};
-  std::array<std::byte, 2 + max_wire_size(0) + 10> tx{};
+  alignas(8) std::array<std::byte, 64> tx{};
+  ASSERT_GE(tx.size(), 2 + *rejection);
+  ASSERT_LT(tx.size(), 2 * (2 + *rejection));
   std::array<CallSlot, 2> slots{};
-  Server server(0xB1, {},
-                {.link = {.receive = rx, .queue = tx},
-                 .slots = slots,
-                 .latest = {},
-                 .scratch = {}},
-                1);
+  Server server(
+      0xB1, {},
+      {.link = {.receive = rx, .queue = tx}, .slots = slots, .latest = {}},
+      {.max_payload = 32, .max_streams = 1});
   ClientLink client(0xA1);
   const Millis now{0};
   while (server.link().state() != LinkState::Linked) {
@@ -705,6 +713,166 @@ TEST_F(ServerTest, TypedSinkBuildsItemsAndLatestValues) {
   EXPECT_THAT(as_hello(got[0].payload)->boot_id(), Eq(1U));
   EXPECT_THAT(as_hello(got[1].payload)->boot_id(), Eq(4U));
   ASSERT_TRUE(sink.end(WireStatus::ABORTED));
+}
+
+TEST_F(ServerTest, ABuildRunsOnlyWhenItsMessageCanGo) {
+  rig.request(10, kMethod);
+  rig.open(20, kMethod, 0);
+  rig.open(21, kMethod, 100);
+  const Reply<wire::Hello> reply(recorder.calls[0].reply);
+  const Sink<wire::Hello> starved(recorder.channels[0].sink);
+  const Sink<wire::Hello> sink(recorder.channels[1].sink);
+  int builds = 0;
+  const auto counted = [&](flatbuffers::FlatBufferBuilder& fbb) {
+    ++builds;
+    return wire::CreateHello(fbb, 1, 2);
+  };
+
+  EXPECT_THAT(starved.send(counted), Eq(std::unexpected(CallError::NoCredit)));
+  // Not until there's room for the largest payload, however small this is.
+  const std::vector<std::byte> big(kMaxPayload);
+  while (recorder.channels[1].sink.send(big)) {
+  }
+  EXPECT_THAT(sink.send(counted), Eq(std::unexpected(CallError::QueueFull)));
+  EXPECT_THAT(reply.send(counted), Eq(std::unexpected(CallError::QueueFull)));
+  EXPECT_THAT(builds, Eq(0));
+
+  rig.pump();
+  rig.take();
+  ASSERT_TRUE(reply.send(counted));
+  EXPECT_THAT(reply.send(counted), Eq(std::unexpected(CallError::Closed)));
+  EXPECT_THAT(builds, Eq(1));
+}
+
+TEST_F(ServerTest, ABuiltLatestValueMustFitItsBufferEvenWithCredit) {
+  rig.open(20, kMethod, 5);
+  const Sink<wire::Credits> sink(recorder.channels[0].sink);
+  const std::vector<wire::Grant> fits(kMaxLatest / 8 - 5);
+  ASSERT_TRUE(sink.set_latest([&](flatbuffers::FlatBufferBuilder& fbb) {
+    return wire::CreateCreditsDirect(fbb, &fits);
+  }));
+  rig.pump();
+  EXPECT_THAT(rig.take(), SizeIs(1));
+  const std::vector<wire::Grant> too_many(kMaxLatest / 8);
+  EXPECT_DEATH((void)sink.set_latest([&](flatbuffers::FlatBufferBuilder& fbb) {
+    return wire::CreateCreditsDirect(fbb, &too_many);
+  }),
+               "");
+}
+
+TEST_F(ServerTest, SendingFromInsideABuildAborts) {
+  rig.request(10, kMethod);
+  rig.request(11, kMethod);
+  rig.open(20, kMethod, 5);
+  const Reply<wire::Hello> reply(recorder.calls[0].reply);
+  const RawReply other = recorder.calls[1].reply;
+  const Sink<wire::Hello> sink(recorder.channels[0].sink);
+  EXPECT_DEATH((void)reply.send([&](flatbuffers::FlatBufferBuilder& fbb) {
+    (void)other.fail(WireStatus::ABORTED);
+    return wire::CreateHello(fbb, 1, 2);
+  }),
+               "");
+  EXPECT_DEATH((void)sink.set_latest([&](flatbuffers::FlatBufferBuilder& fbb) {
+    (void)sink.send(hello(3, 4));
+    return wire::CreateHello(fbb, 1, 2);
+  }),
+               "");
+}
+
+TEST_F(ServerTest, RestartCancelsAndClosesWhatCameBefore) {
+  rig.request(10, kMethod);
+  rig.open(20, kMethod, 5);
+  const RawReply reply = recorder.calls[0].reply;
+  const RawSink sink = recorder.channels[0].sink;
+  rig.server.restart(0xB2);
+  EXPECT_THAT(recorder.cancellations, SizeIs(2));
+  EXPECT_THAT(rig.server.open_calls(), Eq(0U));
+  EXPECT_THAT(rig.server.link().state(), Eq(LinkState::Connecting));
+
+  // A new client, whose ids start over: the old handles don't reach its calls.
+  rig.reboot_client(0xA2);
+  ASSERT_THAT(rig.server.link().state(), Eq(LinkState::Linked));
+  EXPECT_THAT(rig.server.link().peer_boot_id(), Optional(0xA2U));
+  rig.request(10, kMethod);
+  rig.open(20, kMethod, 5);
+  EXPECT_THAT(reply.send({}), Eq(std::unexpected(CallError::Closed)));
+  EXPECT_THAT(sink.send({}), Eq(std::unexpected(CallError::Closed)));
+  EXPECT_THAT(sink.credit(), Eq(0U));
+  rig.pump();
+  EXPECT_THAT(rig.take(), IsEmpty());
+  ASSERT_TRUE(recorder.calls[1].reply.send({}));
+  ASSERT_TRUE(recorder.channels[1].sink.send({}));
+  rig.pump();
+  EXPECT_THAT(rig.take(), SizeIs(2));
+}
+
+// Hooks that check every call into the server holds the lock.
+class CheckingHooks final : public ServerHooks {
+ public:
+  void lock() override { ++depth; }
+  void unlock() override {
+    ASSERT_GT(depth, 0);
+    --depth;
+  }
+  void wake() override {
+    EXPECT_GT(depth, 0);
+    ++wakes;
+  }
+
+  int depth = 0;
+  int wakes = 0;
+};
+
+// A dispatcher that answers at once, and checks it's called locked.
+class LockedAnswerer final : public Dispatcher {
+ public:
+  explicit LockedAnswerer(const CheckingHooks& hooks) : hooks_(hooks) {}
+
+  void call(MethodId /*method*/, std::span<const std::byte> /*request*/,
+            RawReply reply) override {
+    EXPECT_GT(hooks_.depth, 0);
+    EXPECT_TRUE(Reply<wire::Hello>(reply).send(hello(1, 2)));
+  }
+  void open(MethodId /*method*/, std::span<const std::byte> /*request*/,
+            RawSink sink) override {
+    EXPECT_GT(hooks_.depth, 0);
+    sinks.push_back(sink);
+  }
+  void cancelled(CallId /*call*/, MethodId /*method*/) override {
+    EXPECT_GT(hooks_.depth, 0);
+  }
+
+  std::vector<RawSink> sinks;
+
+ private:
+  const CheckingHooks& hooks_;
+};
+
+TEST(ServerHooks, EverythingRunsLockedAndSendsWake) {
+  Rig rig;
+  CheckingHooks hooks;
+  LockedAnswerer answerer(hooks);
+  rig.server.set_hooks(hooks);
+  rig.server.set_dispatcher(answerer);
+
+  rig.request(10, kMethod);
+  EXPECT_THAT(hooks.wakes, Eq(1));
+  rig.open(20, kMethod, 1);
+  ASSERT_THAT(answerer.sinks, SizeIs(1));
+  const Sink<wire::Hello> sink(answerer.sinks[0]);
+  // From outside, as another thread would.
+  ASSERT_TRUE(sink.set_latest(hello(3, 4)));
+  ASSERT_TRUE(sink.set_latest(hello(5, 6)));  // Waits for credit: no wake.
+  EXPECT_THAT(hooks.wakes, Eq(2));
+  EXPECT_THAT(sink.credit(), Eq(0U));
+  ASSERT_TRUE(sink.end());
+  EXPECT_THAT(hooks.wakes, Eq(3));
+  EXPECT_THAT(rig.server.open_calls(), Eq(0U));
+  rig.request(11, kMethod);
+  rig.open(21, kMethod, 1);
+  rig.server.restart(0xB2);
+  EXPECT_THAT(hooks.depth, Eq(0));
+  EXPECT_THAT(rig.take(), SizeIs(4));
 }
 
 TEST_F(ServerTest, ABuiltMessageBiggerThanAnyPayloadAborts) {
