@@ -875,6 +875,21 @@ TEST(ServerHooks, EverythingRunsLockedAndSendsWake) {
   EXPECT_THAT(rig.take(), SizeIs(4));
 }
 
+TEST(Handles, DefaultMadeOnesAreClosed) {
+  const Reply<wire::Hello> reply;
+  const Sink<wire::Hello> sink;
+  EXPECT_THAT(reply.send(hello(1, 2)), Eq(std::unexpected(CallError::Closed)));
+  EXPECT_THAT(reply.fail(WireStatus::ABORTED),
+              Eq(std::unexpected(CallError::Closed)));
+  EXPECT_THAT(sink.send(hello(1, 2)), Eq(std::unexpected(CallError::Closed)));
+  EXPECT_THAT(sink.set_latest(hello(1, 2)),
+              Eq(std::unexpected(CallError::Closed)));
+  EXPECT_THAT(sink.end(), Eq(std::unexpected(CallError::Closed)));
+  EXPECT_THAT(sink.credit(), Eq(0U));
+  EXPECT_THAT(RawSink().send({}), Eq(std::unexpected(CallError::Closed)));
+  EXPECT_THAT(RawReply().send({}), Eq(std::unexpected(CallError::Closed)));
+}
+
 TEST_F(ServerTest, ABuiltMessageBiggerThanAnyPayloadAborts) {
   rig.request(10, kMethod);
   const Reply<wire::Credits> reply(recorder.calls[0].reply);

@@ -17,13 +17,11 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
-#include <functional>
-#include <memory>
 #include <optional>
 #include <span>
-#include <type_traits>
 
 #include "tether/descriptor.h"
+#include "tether/function_ref.h"
 #include "tether/link.h"
 
 namespace tether {
@@ -41,43 +39,11 @@ enum class CallError : uint8_t {
   TooLarge,
 };
 
-namespace detail {
-
-// A callable passed without a template or the heap: valid while the callable
-// is, so only as a parameter.
-template <typename Signature>
-class FunctionRef;
-
-template <typename R, typename... Args>
-class FunctionRef<R(Args...)> {
- public:
-  template <typename F>
-    requires std::is_invocable_r_v<R, F&, Args...> &&
-                 (!std::is_same_v<std::remove_cvref_t<F>, FunctionRef>)
-  // NOLINTNEXTLINE(bugprone-forwarding-reference-overload): constrained above.
-  FunctionRef(F&& f)  // NOLINT(google-explicit-constructor): a parameter type.
-      : object_(const_cast<void*>(static_cast<const void*>(std::addressof(f)))),
-        call_([](void* object, Args... args) -> R {
-          return std::invoke(*static_cast<std::remove_reference_t<F>*>(object),
-                             std::forward<Args>(args)...);
-        }) {}
-
-  R operator()(Args... args) const {
-    return call_(object_, std::forward<Args>(args)...);
-  }
-
- private:
-  void* object_;
-  R (*call_)(void*, Args...);
-};
-
-}  // namespace detail
-
 // Builds a payload in the memory it's given (8-aligned at both ends), and
 // returns it: a part of that memory. The typed layer builds flatbuffers with
 // one (see typed.h).
 using MessageBuilder =
-    detail::FunctionRef<std::span<const std::byte>(std::span<std::byte>)>;
+    FunctionRef<std::span<const std::byte>(std::span<std::byte>)>;
 
 class Server;
 
@@ -86,6 +52,9 @@ class Server;
 // the call is over, or the server restarted, it's Closed.
 class RawReply {
  public:
+  // Answers no call: always Closed. A placeholder, e.g. to receive into.
+  RawReply() = default;
+
   [[nodiscard]] CallId call_id() const { return CallId{call_}; }
 
   // `Closed` if the client cancelled meanwhile. `QueueFull` leaves the call
@@ -106,14 +75,17 @@ class RawReply {
   RawReply(Server& server, uint32_t epoch, uint32_t call)
       : server_(&server), epoch_(epoch), call_(call) {}
 
-  Server* server_;
-  uint32_t epoch_;
-  uint32_t call_;
+  Server* server_ = nullptr;
+  uint32_t epoch_ = 0;
+  uint32_t call_ = 0;
 };
 
 // The server's end of one channel. A cheap handle, like RawReply.
 class RawSink {
  public:
+  // The end of no channel: always Closed. A placeholder, e.g. to receive into.
+  RawSink() = default;
+
   [[nodiscard]] CallId call_id() const { return CallId{call_}; }
 
   // Uses one credit; `NoCredit` until the client consumes earlier items.
@@ -145,9 +117,9 @@ class RawSink {
   RawSink(Server& server, uint32_t epoch, uint32_t call)
       : server_(&server), epoch_(epoch), call_(call) {}
 
-  Server* server_;
-  uint32_t epoch_;
-  uint32_t call_;
+  Server* server_ = nullptr;
+  uint32_t epoch_ = 0;
+  uint32_t call_ = 0;
 };
 
 // What the server hands calls to: the Router, or a test.

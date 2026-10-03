@@ -3,7 +3,8 @@
 
 cmake_minimum_required(VERSION 3.22)
 
-set(EXTRA_COMPONENT_DIRS ${CMAKE_CURRENT_LIST_DIR}/../tether)
+set(EXTRA_COMPONENT_DIRS ${CMAKE_CURRENT_LIST_DIR}/../tether
+                         ${CMAKE_CURRENT_LIST_DIR}/../tether_idf)
 set(COMPONENTS main)
 # Generated config belongs with the build, not the sources.
 set(SDKCONFIG ${CMAKE_BINARY_DIR}/sdkconfig)

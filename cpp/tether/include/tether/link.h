@@ -134,6 +134,7 @@ class Link {
   Link& operator=(const Link&) = delete;
 
   [[nodiscard]] LinkState state() const { return state_; }
+  [[nodiscard]] uint32_t boot_id() const { return boot_id_; }
   // The peer's boot id, once linked.
   [[nodiscard]] std::optional<uint32_t> peer_boot_id() const;
   [[nodiscard]] const LinkStats& stats() const { return stats_; }

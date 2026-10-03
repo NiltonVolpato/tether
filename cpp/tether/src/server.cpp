@@ -9,19 +9,31 @@ namespace {
 
 using State = CallSlot::State;
 
+// What a default-made handle answers.
+constexpr std::unexpected kClosed(CallError::Closed);
+
 }  // namespace
 
 std::expected<void, CallError> RawReply::send(
     std::span<const std::byte> response) const {
+  if (server_ == nullptr) {
+    return kClosed;
+  }
   return server_->respond(epoch_, call_, WireStatus::OK, response);
 }
 
 std::expected<void, CallError> RawReply::send_built(
     MessageBuilder build) const {
+  if (server_ == nullptr) {
+    return kClosed;
+  }
   return server_->respond(epoch_, call_, WireStatus::OK, build);
 }
 
 std::expected<void, CallError> RawReply::fail(WireStatus status) const {
+  if (server_ == nullptr) {
+    return kClosed;
+  }
   if (status == WireStatus::OK) {
     status = WireStatus::INTERNAL;
   }
@@ -30,26 +42,43 @@ std::expected<void, CallError> RawReply::fail(WireStatus status) const {
 
 std::expected<void, CallError> RawSink::send(
     std::span<const std::byte> item) const {
+  if (server_ == nullptr) {
+    return kClosed;
+  }
   return server_->send_item(epoch_, call_, item);
 }
 
 std::expected<void, CallError> RawSink::send_built(MessageBuilder build) const {
+  if (server_ == nullptr) {
+    return kClosed;
+  }
   return server_->send_item(epoch_, call_, build);
 }
 
 std::expected<void, CallError> RawSink::set_latest(
     std::span<const std::byte> item) const {
+  if (server_ == nullptr) {
+    return kClosed;
+  }
   return server_->set_latest(epoch_, call_, item);
 }
 
 std::expected<void, CallError> RawSink::set_latest_built(
     MessageBuilder build) const {
+  if (server_ == nullptr) {
+    return kClosed;
+  }
   return server_->set_latest_built(epoch_, call_, build);
 }
 
-uint16_t RawSink::credit() const { return server_->credit(epoch_, call_); }
+uint16_t RawSink::credit() const {
+  return server_ == nullptr ? uint16_t{0} : server_->credit(epoch_, call_);
+}
 
 std::expected<void, CallError> RawSink::end(WireStatus status) const {
+  if (server_ == nullptr) {
+    return kClosed;
+  }
   return server_->end_stream(epoch_, call_, status);
 }
 

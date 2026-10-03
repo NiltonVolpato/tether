@@ -93,6 +93,8 @@ concept Builds = std::is_invocable_r_v<flatbuffers::Offset<T>, Build,
 template <typename T>
 class Reply {
  public:
+  // Answers no call: always Closed (see RawReply's).
+  Reply() = default;
   explicit Reply(RawReply raw) : raw_(raw) {}
 
   [[nodiscard]] CallId call_id() const { return raw_.call_id(); }
@@ -117,6 +119,8 @@ class Reply {
 template <typename T>
 class Sink {
  public:
+  // The end of no channel: always Closed (see RawSink's).
+  Sink() = default;
   explicit Sink(RawSink raw) : raw_(raw) {}
 
   [[nodiscard]] CallId call_id() const { return raw_.call_id(); }

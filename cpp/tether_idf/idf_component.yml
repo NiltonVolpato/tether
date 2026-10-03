@@ -1,0 +1,6 @@
+version: "0.1.0"
+description: "tether on ESP-IDF: a tether::Server's I/O over a UART, from FreeRTOS tasks."
+dependencies:
+  idf: ">=6.0"
+  tether:
+    path: ../tether
