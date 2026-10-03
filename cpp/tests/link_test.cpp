@@ -286,6 +286,41 @@ TEST(Link, PeerRebootIsDetected) {
   EXPECT_THAT(sim.a.link->next_deadline(), Eq(std::nullopt));
 }
 
+// smart-dial's policy: when one side reboots, the other notices and reboots
+// too. That second reboot must not make the first side see a reboot again.
+TEST(Link, ARebootAnsweredWithARebootLinksOnce) {
+  for (uint64_t seed = 1; seed <= 20; ++seed) {
+    SCOPED_TRACE(seed);
+    for (const bool a_first : {true, false}) {
+      SCOPED_TRACE(a_first);
+      Sim sim(seed, 10);
+      sim.linked();
+      End& first = a_first ? sim.a : sim.b;
+      End& second = a_first ? sim.b : sim.a;
+      // Traffic in flight both ways, as the first reboots.
+      ASSERT_TRUE(first.link->send({.kind = Kind::Item}, payload_of(100, 1)));
+      ASSERT_TRUE(second.link->send({.kind = Kind::Item}, payload_of(100, 2)));
+      sim.run_for(1ms);
+      first.link = std::make_unique<TestLink>(0x1000 + seed);
+      sim.run_until(
+          5s, [&] { return second.link->state() == LinkState::PeerRebooted; });
+      // The rebooted side hasn't linked to the one that's about to reboot.
+      EXPECT_THAT(first.link->state(), Eq(LinkState::Connecting));
+      // The second reboots in turn, a moment later.
+      sim.run_for(20ms);
+      second.link = std::make_unique<TestLink>(0x2000 + seed);
+      sim.linked();
+      EXPECT_THAT(first.link->peer_boot_id(), Optional(0x2000 + seed));
+      EXPECT_THAT(second.link->peer_boot_id(), Optional(0x1000 + seed));
+      // And they stay linked, with traffic.
+      ASSERT_TRUE(first.link->send({.kind = Kind::Item}, payload_of(50, 3)));
+      sim.run_for(3s);
+      EXPECT_THAT(first.link->state(), Eq(LinkState::Linked));
+      EXPECT_THAT(second.link->state(), Eq(LinkState::Linked));
+    }
+  }
+}
+
 TEST(Link, IdleLinkPingsSparingly) {
   Sim sim;
   sim.linked();
