@@ -1,3 +1,4 @@
+use alloc::rc::Rc;
 use core::future::{Future, poll_fn};
 use core::marker::PhantomData;
 use core::pin::Pin;
@@ -33,10 +34,27 @@ impl<X: Transport + ?Sized> Transport for &X {
     }
 }
 
+impl<X: Transport + ?Sized> Transport for Rc<X> {
+    type Call = X::Call;
+    type Channel = X::Channel;
+
+    fn call(&self, method: MethodId, request: &[u8], timeout_ms: u32) -> X::Call {
+        (**self).call(method, request, timeout_ms)
+    }
+
+    fn open(&self, method: MethodId, request: &[u8], capacity: u16) -> X::Channel {
+        (**self).open(method, request, capacity)
+    }
+}
+
 /// A unary call in progress, before its response is verified.
 pub trait RawCall: Unpin {
     type Buf: AsRef<[u8]>;
     /// Ready once the server responded, the deadline passed or the link failed.
+    ///
+    /// For transports to implement; apps await a [`Call`]. On `Pending`, keep
+    /// `cx`'s waker (replacing any earlier one) and wake it when the result is
+    /// ready.
     fn poll_result(&mut self, cx: &mut Context<'_>) -> Poll<Result<Self::Buf, Status>>;
 }
 
@@ -45,6 +63,10 @@ pub trait RawChannel: Unpin {
     type Buf: AsRef<[u8]>;
     /// The next item; `Ready(None)` once the channel ended and every item
     /// was received.
+    ///
+    /// For transports to implement; apps use [`Channel::recv`]. On `Pending`,
+    /// keep `cx`'s waker (replacing any earlier one) and wake it when an item
+    /// arrives or the channel ends.
     fn poll_recv(&mut self, cx: &mut Context<'_>) -> Poll<Option<Self::Buf>>;
     /// `None` while open or while items are waiting; `Some(Ok(()))` when the
     /// server finished the channel.
@@ -100,6 +122,18 @@ impl<C: RawChannel, T: Table> Channel<C, T> {
 
     /// The next item; `Ready(None)` once the channel ended (see `end`). An
     /// item that doesn't verify cancels the call and ends it with `DataLoss`.
+    ///
+    /// **You probably want [`recv`](Self::recv) or
+    /// [`try_recv`](Self::try_recv) instead.** In an async task,
+    /// `channel.recv().await`; in a loop that doesn't await (a UI tick),
+    /// `channel.try_recv()`.
+    ///
+    /// This is the building block those two are made of, for code that
+    /// implements its own `Future` or `Stream`, or drives many channels from
+    /// one hand-written loop. On `Pending` it has stored `cx`'s waker, which is
+    /// woken once when an item arrives or the channel ends; the caller must
+    /// poll again after that. Polling with a no-op waker, as `try_recv` does,
+    /// means nobody is woken: you're on your own to poll again.
     pub fn poll_recv(&mut self, cx: &mut Context<'_>) -> Poll<Option<Message<T, C::Buf>>> {
         let Some(raw) = &mut self.raw else { return Poll::Ready(None) };
         let Some(buf) = core::task::ready!(raw.poll_recv(cx)) else {
@@ -115,11 +149,20 @@ impl<C: RawChannel, T: Table> Channel<C, T> {
         }
     }
 
+    /// Waits for the next item; `None` once the channel ended (see `end`).
+    /// The task sleeps until an item arrives:
+    ///
+    /// ```ignore
+    /// while let Some(item) = channel.recv().await {
+    ///     handle(item.get());
+    /// }
+    /// ```
     pub async fn recv(&mut self) -> Option<Message<T, C::Buf>> {
         poll_fn(|cx| self.poll_recv(cx)).await
     }
 
-    /// An item if one is waiting.
+    /// An item if one is waiting, without waiting. `None` doesn't mean the
+    /// channel ended: check `end`.
     pub fn try_recv(&mut self) -> Option<Message<T, C::Buf>> {
         poll_now(|cx| self.poll_recv(cx)).flatten()
     }

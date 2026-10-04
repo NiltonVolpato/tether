@@ -16,7 +16,7 @@ use embassy_time::{Duration, Instant, MockDriver, Timer};
 use embedded_io_async::{ErrorType, Read, Write};
 use futures::executor::LocalPool;
 use futures::task::LocalSpawnExt;
-use tether::{MethodId, RawCall, RawChannel, Status};
+use tether::{MethodId, RawCall, RawChannel, Status, Transport};
 use tether_core::client::{Client, SharedClient};
 use tether_core::link::{LinkConfig, LinkState};
 use tether_core::notify::Notify;
@@ -248,7 +248,7 @@ impl Rig {
     fn linked(&mut self) {
         let (client, server) = (self.client.clone(), self.server.clone());
         self.run_until(5_000, move || {
-            matches!(client.borrow().link_state(), LinkState::Linked { .. })
+            matches!(client.link_state(), LinkState::Linked { .. })
                 && matches!(server.borrow().link_state(), LinkState::Linked { .. })
         });
     }
@@ -260,7 +260,7 @@ async fn call(
     method: MethodId,
     request: Vec<u8>,
 ) -> Result<Vec<u8>, Status> {
-    let mut call = client.borrow_mut().call(method, request, 60_000);
+    let mut call = client.call(method, &request, 60_000);
     poll_fn(|cx| call.poll_result(cx)).await
 }
 
@@ -283,7 +283,7 @@ fn apps_call_and_stream_over_lossy_links() {
         {
             let (client, numbers, end) = (rig.client.clone(), numbers.clone(), end.clone());
             rig.spawn(async move {
-                let mut channel = client.borrow_mut().open(COUNTDOWN, vec![100], 4);
+                let mut channel = client.open(COUNTDOWN, &[100], 4);
                 while let Some(item) = poll_fn(|cx| channel.poll_recv(cx)).await {
                     numbers.borrow_mut().push(item[0]);
                 }
@@ -312,7 +312,7 @@ fn consuming_an_item_grants_credit_at_once() {
     {
         let (client, numbers) = (rig.client.clone(), numbers.clone());
         rig.spawn(async move {
-            let mut channel = client.borrow_mut().open(COUNTDOWN, vec![100], 1);
+            let mut channel = client.open(COUNTDOWN, &[100], 1);
             while poll_fn(|cx| channel.poll_recv(cx)).await.is_some() {
                 *numbers.borrow_mut() += 1;
             }
@@ -328,7 +328,7 @@ fn consuming_an_item_grants_credit_at_once() {
 fn dropping_a_call_cancels_it_at_once() {
     let mut rig = Rig::new(1, 0);
     rig.linked();
-    let channel = rig.client.borrow_mut().open(COUNTDOWN, vec![255], 1);
+    let channel = rig.client.open(COUNTDOWN, &[255], 1);
     let done = rig.cancelled.clone();
     // The first item arrives; the server is now waiting for credit.
     rig.run_until(5_000, {
@@ -353,7 +353,7 @@ fn an_idle_link_only_pings() {
     // millisecond.
     let writes = rig.c2s.wire.borrow().writes + rig.s2c.wire.borrow().writes;
     assert!(writes < 400, "{writes} writes");
-    assert!(matches!(rig.client.borrow().link_state(), LinkState::Linked { .. }));
+    assert!(matches!(rig.client.link_state(), LinkState::Linked { .. }));
 }
 
 #[test]
@@ -369,6 +369,6 @@ fn the_tasks_end_with_the_link() {
     exits.sort_by_key(|(who, _)| *who);
     assert_eq!(exits, [("client", LinkState::PeerLost), ("server", LinkState::PeerLost)]);
     // The client's calls fail, rather than waiting for ever.
-    let result = rig.client.borrow_mut().call(ECHO, vec![], 1_000).try_result();
+    let result = rig.client.call(ECHO, &[], 1_000).try_result();
     assert_eq!(result, Some(Err(Status::Unavailable)));
 }

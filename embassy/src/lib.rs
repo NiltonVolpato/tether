@@ -52,23 +52,23 @@ pub trait Endpoint {
 
 impl Endpoint for SharedClient {
     fn receive(&self, bytes: &[u8]) {
-        self.borrow_mut().receive(bytes);
+        SharedClient::receive(self, bytes);
     }
 
     fn poll_transmit(&self, now: u64) -> Option<Vec<u8>> {
-        self.borrow_mut().poll_transmit(now)
+        SharedClient::poll_transmit(self, now)
     }
 
     fn next_deadline(&self) -> Option<u64> {
-        self.borrow().next_deadline()
+        SharedClient::next_deadline(self)
     }
 
     fn link_state(&self) -> LinkState {
-        self.borrow().link_state()
+        SharedClient::link_state(self)
     }
 
     fn io(&self) -> SharedNotify {
-        self.borrow().io()
+        SharedClient::io(self)
     }
 }
 

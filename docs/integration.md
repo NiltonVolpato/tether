@@ -382,13 +382,19 @@ hardware RNG. esp-hal's async `UartRx`/`UartTx` implement `embedded-io-async`
 link's next deadline, or an app starts a call or takes an item, so an idle link
 costs a ping every 250 ms and nothing else.
 
+`SharedClient`'s methods take `&self` and none is async, so apps and the I/O
+task share it freely, and nothing holds it across an `.await`. It isn't
+thread-safe: apps must run on the I/O task's executor. A `StaticCell` lives for
+ever; an `Rc<SharedClient>` is freed with its last user, which matters once the
+co-processor can be put to sleep.
+
 ### Calling
 
 ```rust
 use crate::generated::coprocessor_rpc::coprocessor::wifi;
 use crate::generated::coprocessor_generated::coprocessor::{EmptyT, ScanT};
 
-let wifi = wifi::Client(client);   // Any Transport: &SharedClient, or a fake.
+let wifi = wifi::Client(client);   // Any Transport: &SharedClient, Rc<SharedClient>, or a fake.
 
 // Unary: await the call. Errors are tether::Status (gRPC's codes).
 match wifi.status(&EmptyT {}).await {
@@ -480,4 +486,4 @@ the wire), so it must be the line's real rate.
 - **Stats to look at:** `server.link().stats()` (retransmits, duplicates,
   errors, the deepest the queue got), `io.stats()` (UART overflows: the I/O
   task fell behind), `server.stats().lost_rejections`, and on the S3
-  `client.borrow().link_stats()` and `stats()`.
+  `client.link_stats()` and `client.stats()`.

@@ -25,9 +25,25 @@ struct Slot {
 
 type SlotRef = Rc<RefCell<Slot>>;
 
-fn wake(slot: &mut Slot) {
-    if let Some(w) = slot.waker.take() {
-        w.wake();
+/// Who to wake once the client and the slots are no longer borrowed. A waker
+/// is someone else's code: one that polled its task right away would find
+/// them borrowed.
+#[derive(Default)]
+struct Pending {
+    wakers: Vec<Waker>,
+    io: Option<SharedNotify>,
+}
+
+impl Pending {
+    fn add(&mut self, slot: &mut Slot) {
+        self.wakers.extend(slot.waker.take());
+    }
+
+    fn wake(self) {
+        self.wakers.into_iter().for_each(Waker::wake);
+        if let Some(io) = self.io {
+            io.notify();
+        }
     }
 }
 
@@ -138,6 +154,7 @@ pub struct Client {
     stats: ClientStats,
     now: u64,
     io: SharedNotify,
+    pending: Pending,
 }
 
 impl Client {
@@ -149,7 +166,15 @@ impl Client {
             stats: ClientStats::default(),
             now: 0,
             io: SharedNotify::default(),
+            pending: Pending::default(),
         }
+    }
+
+    /// Runs `f`, then wakes whoever it left pending.
+    fn waking<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
+        let result = f(self);
+        core::mem::take(&mut self.pending).wake();
+        result
     }
 
     /// Notified when the app does something that needs the I/O task: starts a
@@ -188,6 +213,26 @@ impl Client {
     /// Starts a unary call that fails with `DeadlineExceeded` after
     /// `timeout_ms`, counted from the last `poll_transmit` time.
     pub fn call(&mut self, method: MethodId, payload: Vec<u8>, timeout_ms: u64) -> Call {
+        self.waking(|c| c.start_call(method, payload, timeout_ms))
+    }
+
+    /// Opens a server-streaming channel buffering up to `capacity` items.
+    pub fn open(&mut self, method: MethodId, payload: Vec<u8>, capacity: u16) -> Channel {
+        self.waking(|c| c.start_open(method, payload, capacity))
+    }
+
+    pub fn receive(&mut self, bytes: &[u8]) {
+        self.waking(|c| c.feed(bytes));
+    }
+
+    pub fn poll_transmit(&mut self, now: u64) -> Option<Vec<u8>> {
+        self.waking(|c| c.step(now))
+    }
+
+    // The methods below leave their wakes pending, for `waking` or for
+    // `SharedClient::with`.
+
+    fn start_call(&mut self, method: MethodId, payload: Vec<u8>, timeout_ms: u64) -> Call {
         let deadline = Some(self.now + timeout_ms);
         Call {
             slot: self.start(Kind::Request, method, payload, 1, deadline),
@@ -195,8 +240,7 @@ impl Client {
         }
     }
 
-    /// Opens a server-streaming channel buffering up to `capacity` items.
-    pub fn open(&mut self, method: MethodId, payload: Vec<u8>, capacity: u16) -> Channel {
+    fn start_open(&mut self, method: MethodId, payload: Vec<u8>, capacity: u16) -> Channel {
         assert!(capacity > 0);
         Channel {
             slot: self.start(Kind::Open, method, payload, capacity, None),
@@ -234,11 +278,11 @@ impl Client {
         let header = Header { call_id, service, method, credit, ..Header::new(kind) };
         self.link.send(header, payload);
         self.stats.calls += 1;
-        self.io.notify();
+        self.pending.io = Some(self.io.clone());
         slot
     }
 
-    pub fn receive(&mut self, bytes: &[u8]) {
+    fn feed(&mut self, bytes: &[u8]) {
         self.link.receive(bytes);
         while let Some(frame) = self.link.poll_receive() {
             self.dispatch(frame);
@@ -246,7 +290,7 @@ impl Client {
         self.check_link();
     }
 
-    pub fn poll_transmit(&mut self, now: u64) -> Option<Vec<u8>> {
+    fn step(&mut self, now: u64) -> Option<Vec<u8>> {
         self.now = now;
         self.scan();
         self.expire_deadlines(now);
@@ -264,7 +308,7 @@ impl Client {
             if let Some(slot) = entry.slot.upgrade() {
                 let mut slot = slot.borrow_mut();
                 slot.end = Some(Err(Status::Unavailable));
-                wake(&mut slot);
+                self.pending.add(&mut slot);
             }
         }
     }
@@ -318,7 +362,7 @@ impl Client {
             if let Some(slot) = self.calls.get(&id).and_then(|e| e.slot.upgrade()) {
                 let mut slot = slot.borrow_mut();
                 slot.end = Some(Err(Status::DeadlineExceeded));
-                wake(&mut slot);
+                self.pending.add(&mut slot);
             }
             self.stats.deadlines_exceeded += 1;
             self.cancel(id);
@@ -368,25 +412,69 @@ impl Client {
                 self.calls.remove(&h.call_id);
             }
         }
-        wake(&mut slot);
+        self.pending.add(&mut slot);
     }
 }
 
-/// The client as apps share it. It's a `RefCell`, so every app must run on
-/// the executor that also feeds it bytes.
+/// The client as apps and the I/O task share it, by reference or `Rc`.
+///
+/// Each method borrows the client only while it runs and none of them is
+/// async, so no borrow can be held across an `.await`. Wakers are called after
+/// the borrow ends, so a task they poll right away can use the client too.
+///
+/// It isn't thread-safe: every app must run on the executor that also feeds
+/// it bytes.
 pub struct SharedClient(RefCell<Client>);
 
 impl SharedClient {
     pub fn new(client: Client) -> Self {
         Self(RefCell::new(client))
     }
-}
 
-impl core::ops::Deref for SharedClient {
-    type Target = RefCell<Client>;
+    /// Runs `f` on the client, then wakes whoever it left pending.
+    fn with<R>(&self, f: impl FnOnce(&mut Client) -> R) -> R {
+        let (result, pending) = {
+            let mut client = self.0.borrow_mut();
+            let result = f(&mut client);
+            (result, core::mem::take(&mut client.pending))
+        };
+        pending.wake();
+        result
+    }
 
-    fn deref(&self) -> &RefCell<Client> {
-        &self.0
+    pub fn receive(&self, bytes: &[u8]) {
+        self.with(|c| c.feed(bytes));
+    }
+
+    pub fn poll_transmit(&self, now: u64) -> Option<Vec<u8>> {
+        self.with(|c| c.step(now))
+    }
+
+    /// See [`Client::next_deadline`].
+    pub fn next_deadline(&self) -> Option<u64> {
+        self.0.borrow().next_deadline()
+    }
+
+    /// See [`Client::io`].
+    pub fn io(&self) -> SharedNotify {
+        self.0.borrow().io()
+    }
+
+    pub fn link_state(&self) -> LinkState {
+        self.0.borrow().link_state()
+    }
+
+    pub fn link_stats(&self) -> LinkStats {
+        self.0.borrow().link_stats()
+    }
+
+    pub fn stats(&self) -> ClientStats {
+        self.0.borrow().stats()
+    }
+
+    /// See [`Client::open_calls`].
+    pub fn open_calls(&self) -> usize {
+        self.0.borrow().open_calls()
     }
 }
 
@@ -395,10 +483,10 @@ impl Transport for SharedClient {
     type Channel = Channel;
 
     fn call(&self, method: MethodId, request: &[u8], timeout_ms: u32) -> Call {
-        self.borrow_mut().call(method, request.to_vec(), timeout_ms.into())
+        self.with(|c| c.start_call(method, request.to_vec(), timeout_ms.into()))
     }
 
     fn open(&self, method: MethodId, request: &[u8], capacity: u16) -> Channel {
-        self.borrow_mut().open(method, request.to_vec(), capacity)
+        self.with(|c| c.start_open(method, request.to_vec(), capacity))
     }
 }

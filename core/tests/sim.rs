@@ -2,14 +2,16 @@
 
 mod common;
 
+use std::cell::RefCell;
 use std::collections::BTreeMap;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::task::{Context, Poll, Wake, Waker};
 
 use common::{ServerApp, Sim};
-use tether::{MethodId, RawChannel, Status, StreamError};
-use tether_core::client::{Channel, Client};
+use tether::{MethodId, RawCall, RawChannel, Status, StreamError, Transport};
+use tether_core::client::{Call, Channel, Client, SharedClient};
 use tether_core::frame::{self, Deframer, FrameError, Header};
 use tether_core::link::{LinkConfig, LinkState};
 use tether_core::server::{Server, ServerEvent, SharedServer};
@@ -151,7 +153,7 @@ fn lost_hello_reply_is_not_a_reboot() {
     sim.s2c.drop_first = 3;
     sim.linked();
     sim.run(500);
-    assert!(matches!(sim.client.borrow().link_state(), LinkState::Linked { .. }));
+    assert!(matches!(sim.client.link_state(), LinkState::Linked { .. }));
     assert!(matches!(sim.server.borrow().link_state(), LinkState::Linked { .. }));
 }
 
@@ -175,10 +177,10 @@ fn queued_hellos_from_one_boot_link_once() {
 fn peer_reboot_is_detected() {
     let mut sim = clean();
     sim.linked();
-    let call = sim.client.borrow_mut().call(BLACK_HOLE, vec![], 60_000);
+    let call = sim.client.call(BLACK_HOLE, &[], 60_000);
     sim.run(100);
     sim.server = Server::new(0xBEEF, LinkConfig::default(), 4).shared();
-    sim.run_until(1_000, |s| s.client.borrow().link_state() == LinkState::PeerRebooted);
+    sim.run_until(1_000, |s| s.client.link_state() == LinkState::PeerRebooted);
     // The rebooted server must not have linked to the doomed client.
     assert_eq!(sim.server.borrow().link_state(), LinkState::Connecting);
     assert_eq!(call.try_result(), Some(Err(Status::Unavailable)));
@@ -189,12 +191,12 @@ fn idle_link_pings_sparingly() {
     let mut sim = clean();
     sim.linked();
     sim.run(10_000);
-    let pings = sim.client.borrow().link_stats().pings + sim.server.borrow().link_stats().pings;
+    let pings = sim.client.link_stats().pings + sim.server.borrow().link_stats().pings;
     // A ping and its ack keep both sides quiet, so ideally one ping goes out
     // per interval (40 in 10 s). Pings cross when both sides' timers expire
     // within one latency of each other, which adds up to one more per interval.
     assert!((40..=80).contains(&pings), "{pings} pings in 10 s");
-    assert!(matches!(sim.client.borrow().link_state(), LinkState::Linked { .. }));
+    assert!(matches!(sim.client.link_state(), LinkState::Linked { .. }));
     assert!(matches!(sim.server.borrow().link_state(), LinkState::Linked { .. }));
 }
 
@@ -204,10 +206,7 @@ fn idle_lossy_link_is_not_lost() {
         let mut sim = lossy(seed, 15);
         sim.linked();
         sim.run(10_000);
-        assert!(
-            matches!(sim.client.borrow().link_state(), LinkState::Linked { .. }),
-            "seed {seed}"
-        );
+        assert!(matches!(sim.client.link_state(), LinkState::Linked { .. }), "seed {seed}");
         assert!(
             matches!(sim.server.borrow().link_state(), LinkState::Linked { .. }),
             "seed {seed}"
@@ -218,13 +217,13 @@ fn idle_lossy_link_is_not_lost() {
 #[test]
 fn silent_server_is_lost_and_calls_fail() {
     let mut sim = clean();
-    let ch = sim.client.borrow_mut().open(SUBSCRIBE, vec![], 1);
-    let call = sim.client.borrow_mut().call(BLACK_HOLE, vec![], 60_000);
+    let ch = sim.client.open(SUBSCRIBE, &[], 1);
+    let call = sim.client.call(BLACK_HOLE, &[], 60_000);
     sim.run_until(1_000, |s| s.app.subscriptions.len() == 1 && s.app.unary_calls == 1);
 
     sim.s2c.cut = true;
     let cut_at = sim.now;
-    sim.run_until(2_000, |s| s.client.borrow().link_state() == LinkState::PeerLost);
+    sim.run_until(2_000, |s| s.client.link_state() == LinkState::PeerLost);
     // An idle link: one ping interval, then the retransmits.
     let cfg = LinkConfig::default();
     let ping = frame::encode(&Header { seq: 1, ..Header::new(Kind::Ping) }, &[]).len();
@@ -234,15 +233,15 @@ fn silent_server_is_lost_and_calls_fail() {
 
     assert_eq!(call.try_result(), Some(Err(Status::Unavailable)));
     assert_eq!(ch.end(), Some(Err(Status::Unavailable)));
-    assert_eq!(sim.client.borrow().open_calls(), 0);
-    let late = sim.client.borrow_mut().call(ECHO, vec![1], 1_000);
+    assert_eq!(sim.client.open_calls(), 0);
+    let late = sim.client.call(ECHO, &[1], 1_000);
     assert_eq!(late.try_result(), Some(Err(Status::Unavailable)));
 }
 
 #[test]
 fn server_cancels_calls_when_client_is_lost() {
     let mut sim = clean();
-    let _ch = sim.client.borrow_mut().open(SUBSCRIBE, vec![], 1);
+    let _ch = sim.client.open(SUBSCRIBE, &[], 1);
     sim.run_until(1_000, |s| s.app.subscriptions.len() == 1);
     let call_id = sim.app.subscriptions[0];
 
@@ -259,15 +258,15 @@ fn server_cancels_calls_when_client_is_lost() {
 #[test]
 fn unary_call() {
     let mut sim = clean();
-    let call = sim.client.borrow_mut().call(ECHO, vec![1, 2, 3], 1_000);
+    let call = sim.client.call(ECHO, &[1, 2, 3], 1_000);
     assert_eq!(sim.wait(1_000, || call.try_result()), Ok(vec![3, 2, 1]));
-    assert_eq!(sim.client.borrow().open_calls(), 0);
+    assert_eq!(sim.client.open_calls(), 0);
 }
 
 #[test]
 fn unknown_method_returns_status() {
     let mut sim = clean();
-    let call = sim.client.borrow_mut().call(MethodId::new(0, 99), vec![], 1_000);
+    let call = sim.client.call(MethodId::new(0, 99), &[], 1_000);
     assert_eq!(sim.wait(1_000, || call.try_result()), Err(Status::Unimplemented));
 }
 
@@ -275,7 +274,7 @@ fn unknown_method_returns_status() {
 fn deadline_exceeded_cancels_server_side() {
     let mut sim = clean();
     sim.linked();
-    let call = sim.client.borrow_mut().call(BLACK_HOLE, vec![], 100);
+    let call = sim.client.call(BLACK_HOLE, &[], 100);
     sim.run_until(1_000, |s| !s.app.cancelled.is_empty());
     assert_eq!(call.try_result(), Some(Err(Status::DeadlineExceeded)));
     assert_eq!(sim.server.borrow().open_calls(), 0);
@@ -285,28 +284,27 @@ fn deadline_exceeded_cancels_server_side() {
 fn unary_calls_run_exactly_once_over_lossy_link() {
     for seed in 1..=30 {
         let mut sim = lossy(seed, 15);
-        let calls: Vec<_> = (0..20u8)
-            .map(|i| (i, sim.client.borrow_mut().call(ECHO, vec![i, i + 1], 60_000)))
-            .collect();
+        let calls: Vec<_> =
+            (0..20u8).map(|i| (i, sim.client.call(ECHO, &[i, i + 1], 60_000))).collect();
         sim.run_until(60_000, |_| calls.iter().all(|(_, c)| c.try_result().is_some()));
         for (i, call) in &calls {
             assert_eq!(call.try_result(), Some(Ok(vec![i + 1, *i])), "seed {seed}");
         }
         assert_eq!(sim.app.unary_calls, 20, "seed {seed}: duplicate or lost call");
-        let stats = sim.client.borrow().link_stats();
+        let stats = sim.client.link_stats();
         assert!(stats.retransmits > 0 && stats.crc_errors + stats.cobs_errors > 0);
-        assert_ne!(sim.client.borrow().link_state(), LinkState::PeerRebooted);
+        assert_ne!(sim.client.link_state(), LinkState::PeerRebooted);
     }
 }
 
 #[test]
 fn dropping_call_cancels_it() {
     let mut sim = clean();
-    let call = sim.client.borrow_mut().call(BLACK_HOLE, vec![], 60_000);
+    let call = sim.client.call(BLACK_HOLE, &[], 60_000);
     sim.run_until(1_000, |s| s.app.unary_calls == 1);
     drop(call);
     sim.run_until(1_000, |s| s.app.cancelled.len() == 1);
-    assert_eq!(sim.client.borrow().open_calls(), 0);
+    assert_eq!(sim.client.open_calls(), 0);
     assert_eq!(sim.server.borrow().open_calls(), 0);
 }
 
@@ -315,8 +313,7 @@ fn dropping_call_cancels_it() {
 #[test]
 fn freed_slots_of_many_channels_go_out_in_one_credit_frame() {
     let mut sim = clean();
-    let channels: Vec<_> =
-        (0..3).map(|_| sim.client.borrow_mut().open(SUBSCRIBE, vec![], 1)).collect();
+    let channels: Vec<_> = (0..3).map(|_| sim.client.open(SUBSCRIBE, &[], 1)).collect();
     sim.run_until(1_000, |s| s.app.subscriptions.len() == 3);
     let subscriptions = sim.app.subscriptions.clone();
     for &call_id in &subscriptions {
@@ -351,7 +348,7 @@ fn freed_slots_of_many_channels_go_out_in_one_credit_frame() {
 fn stream_delivers_in_order_with_slow_consumer_over_lossy_link() {
     for seed in 1..=30 {
         let mut sim = lossy(seed, 10);
-        let ch = sim.client.borrow_mut().open(COUNT, vec![200], 2);
+        let ch = sim.client.open(COUNT, &[200], 2);
         let mut got = Vec::new();
         sim.run_until(120_000, |s| {
             if s.now % 7 == 0 {
@@ -363,14 +360,14 @@ fn stream_delivers_in_order_with_slow_consumer_over_lossy_link() {
         assert_eq!(got, (0..200).collect::<Vec<u8>>(), "seed {seed}");
         sim.run_until(1_000, |_| ch.end().is_some());
         assert_eq!(ch.end(), Some(Ok(())));
-        assert_eq!(sim.client.borrow().stats().overruns, 0, "server ignored credit");
+        assert_eq!(sim.client.stats().overruns, 0, "server ignored credit");
     }
 }
 
 #[test]
 fn dropping_channel_unsubscribes() {
     let mut sim = clean();
-    let ch = sim.client.borrow_mut().open(SUBSCRIBE, vec![], 1);
+    let ch = sim.client.open(SUBSCRIBE, &[], 1);
     sim.run_until(1_000, |s| s.app.subscriptions.len() == 1);
     let call_id = sim.app.subscriptions[0];
     sim.server.borrow_mut().send(call_id, vec![42]).unwrap();
@@ -380,14 +377,14 @@ fn dropping_channel_unsubscribes() {
     sim.run_until(1_000, |s| s.app.cancelled == [call_id]);
     assert_eq!(sim.server.borrow_mut().send(call_id, vec![43]), Err(StreamError::Closed));
     assert_eq!(sim.server.borrow().open_calls(), 0);
-    assert_eq!(sim.client.borrow().open_calls(), 0);
-    assert_eq!(sim.client.borrow().stats().stale_items, 0);
+    assert_eq!(sim.client.open_calls(), 0);
+    assert_eq!(sim.client.stats().stale_items, 0);
 }
 
 #[test]
 fn item_racing_the_cancel_is_dropped() {
     let mut sim = clean();
-    let ch = sim.client.borrow_mut().open(SUBSCRIBE, vec![], 4);
+    let ch = sim.client.open(SUBSCRIBE, &[], 4);
     sim.run_until(1_000, |s| s.app.subscriptions.len() == 1);
     let call_id = sim.app.subscriptions[0];
 
@@ -396,16 +393,16 @@ fn item_racing_the_cancel_is_dropped() {
     sim.server.borrow_mut().send(call_id, vec![1]).unwrap();
     sim.run_until(1_000, |s| s.app.cancelled == [call_id]);
     sim.run(200);
-    let stats = sim.client.borrow().stats();
+    let stats = sim.client.stats();
     assert_eq!((stats.stale_items, stats.cancels), (1, 1));
-    assert_eq!(sim.client.borrow().open_calls(), 0);
+    assert_eq!(sim.client.open_calls(), 0);
     assert_eq!(sim.server.borrow().open_calls(), 0);
 }
 
 #[test]
 fn latest_value_coalesces_while_consumer_is_busy() {
     let mut sim = clean();
-    let ch = sim.client.borrow_mut().open(SUBSCRIBE, vec![], 1);
+    let ch = sim.client.open(SUBSCRIBE, &[], 1);
     sim.run_until(1_000, |s| s.app.subscriptions.len() == 1);
     let call_id = sim.app.subscriptions[0];
 
@@ -424,8 +421,7 @@ fn latest_value_coalesces_while_consumer_is_busy() {
 #[test]
 fn stream_limit_returns_resource_exhausted() {
     let mut sim = clean();
-    let channels: Vec<_> =
-        (0..5).map(|_| sim.client.borrow_mut().open(SUBSCRIBE, vec![], 1)).collect();
+    let channels: Vec<_> = (0..5).map(|_| sim.client.open(SUBSCRIBE, &[], 1)).collect();
     sim.run_until(1_000, |_| channels[4].end().is_some());
     assert_eq!(channels[4].end(), Some(Err(Status::ResourceExhausted)));
     assert!(channels[..4].iter().all(|c| c.end().is_none()));
@@ -441,7 +437,7 @@ fn poll_recv_wakes_on_item() {
     }
 
     let mut sim = clean();
-    let mut ch = sim.client.borrow_mut().open(SUBSCRIBE, vec![], 1);
+    let mut ch = sim.client.open(SUBSCRIBE, &[], 1);
     let wakes = Arc::new(CountWakes(AtomicU32::new(0)));
     let waker = Waker::from(wakes.clone());
     let mut cx = Context::from_waker(&waker);
@@ -451,4 +447,33 @@ fn poll_recv_wakes_on_item() {
     sim.server.borrow_mut().send(sim.app.subscriptions[0], vec![7]).unwrap();
     sim.run_until(1_000, |_| wakes.0.load(Ordering::Relaxed) > 0);
     assert_eq!(ch.poll_recv(&mut cx), Poll::Ready(Some(vec![7])));
+}
+
+#[test]
+fn a_waker_can_use_the_client_at_once() {
+    // A waker that polls its task right away: it reads its call's result and
+    // starts another call, while the client is still in `poll_transmit`.
+    type Task = (Rc<SharedClient>, Call, Option<Result<Vec<u8>, Status>>);
+    thread_local! {
+        static TASK: RefCell<Option<Task>> = const { RefCell::new(None) };
+    }
+    struct PollAtOnce;
+    impl Wake for PollAtOnce {
+        fn wake(self: Arc<Self>) {
+            TASK.with_borrow_mut(|task| {
+                let (client, call, result) = task.as_mut().unwrap();
+                *result = call.try_result();
+                drop(client.call(ECHO, &[], 1_000));
+            });
+        }
+    }
+
+    let client = Rc::new(SharedClient::new(Client::new(0xC1, LinkConfig::default())));
+    let mut call = client.call(BLACK_HOLE, &[], 10);
+    let waker = Waker::from(Arc::new(PollAtOnce));
+    assert!(call.poll_result(&mut Context::from_waker(&waker)).is_pending());
+    TASK.set(Some((client.clone(), call, None)));
+    client.poll_transmit(100);
+    let (_, _, result) = TASK.take().unwrap();
+    assert_eq!(result, Some(Err(Status::DeadlineExceeded)));
 }

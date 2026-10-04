@@ -21,6 +21,7 @@ impl Backend for Rust {
         writeln!(out, "#![allow(clippy::all, unused_imports, unused_variables)]\n").unwrap();
         writeln!(out, "use {tether}::flatbuffers;").unwrap();
         writeln!(out, "use {tether}::{{Pack, Table}};").unwrap();
+        writeln!(out, "use alloc::vec::Vec;").unwrap();
         writeln!(out, "use {} as fb;\n", self.types).unwrap();
         for t in tables {
             let p = type_path(t);

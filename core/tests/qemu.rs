@@ -21,7 +21,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use generated::greeter_generated::test::{BlobT, CountT, EmptyT, Number};
 use generated::greeter_rpc::test::greeter;
-use tether::{Message, MethodId, RawChannel, Status, Table};
+use tether::{Message, MethodId, RawChannel, Status, Table, Transport};
 use tether_core::client::{Client, SharedClient};
 use tether_core::link::{LinkConfig, LinkState};
 
@@ -89,7 +89,7 @@ impl Device {
         let mut device =
             Self { port, received, stop, reader: Some(reader), client, start: Instant::now() };
         device.pump_until(Duration::from_secs(60), |d| {
-            matches!(d.client.borrow().link_state(), LinkState::Linked { .. })
+            matches!(d.client.link_state(), LinkState::Linked { .. })
         });
         device
     }
@@ -100,22 +100,22 @@ impl Device {
 
     /// One round of the client's I/O: writes what's due, then reads what arrived.
     fn pump_once(&mut self) {
-        let (state, stats) = (self.client.borrow().link_state(), self.client.borrow().link_stats());
+        let (state, stats) = (self.client.link_state(), self.client.link_stats());
         assert!(!state.is_terminal(), "link {state:?}, {stats:?}");
         loop {
-            let wire = self.client.borrow_mut().poll_transmit(self.now());
+            let wire = self.client.poll_transmit(self.now());
             let Some(wire) = wire else { break };
             self.write(&wire);
         }
         // Everything that arrived, before sending again: writes can block
         // while QEMU drains the pty, and acks mustn't wait behind them.
         match self.received.recv_timeout(Duration::from_millis(5)) {
-            Ok(bytes) => self.client.borrow_mut().receive(&bytes),
+            Ok(bytes) => self.client.receive(&bytes),
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(e) => panic!("the reader stopped: {e}"),
         }
         while let Ok(bytes) = self.received.try_recv() {
-            self.client.borrow_mut().receive(&bytes);
+            self.client.receive(&bytes);
         }
     }
 
@@ -123,8 +123,7 @@ impl Device {
     fn pump_until(&mut self, timeout: Duration, mut done: impl FnMut(&mut Self) -> bool) {
         let deadline = Instant::now() + timeout;
         while !done(self) {
-            let (state, stats) =
-                (self.client.borrow().link_state(), self.client.borrow().link_stats());
+            let (state, stats) = (self.client.link_state(), self.client.link_stats());
             assert!(Instant::now() < deadline, "timed out; link {state:?}, {stats:?}");
             self.pump_once();
         }
@@ -193,7 +192,7 @@ impl Device {
 
     /// A call by id with any bytes for a request, waited for.
     fn raw_call(&mut self, method: MethodId, request: &[u8]) -> Result<Vec<u8>, Status> {
-        let call = self.client.borrow_mut().call(method, request.to_vec(), 5_000);
+        let call = self.client.call(method, request, 5_000);
         let mut result = None;
         self.pump_until(Duration::from_secs(10), |_| {
             result = call.try_result();
@@ -204,7 +203,7 @@ impl Device {
 
     /// How a channel opened by id with any bytes for a request ends.
     fn raw_open(&mut self, method: MethodId, request: &[u8]) -> Result<(), Status> {
-        let channel = self.client.borrow_mut().open(method, request.to_vec(), 1);
+        let channel = self.client.open(method, request, 1);
         let mut end = None;
         self.pump_until(Duration::from_secs(10), |_| {
             end = channel.end();
@@ -260,7 +259,7 @@ fn unhex(hex: &str) -> Vec<u8> {
 fn links_with_the_device() {
     let _device = DEVICE.lock().unwrap_or_else(PoisonError::into_inner);
     let device = Device::connect();
-    let LinkState::Linked { peer_boot_id } = device.client.borrow().link_state() else {
+    let LinkState::Linked { peer_boot_id } = device.client.link_state() else {
         unreachable!()
     };
     assert_ne!(peer_boot_id, 0);
@@ -299,7 +298,7 @@ fn recovers_from_bad_frames_and_line_noise() {
         assert_eq!(device.echo(&request), request, "after {i}");
     }
     // Some frame was lost, in one direction or the other.
-    let stats = device.client.borrow().link_stats();
+    let stats = device.client.link_stats();
     assert!(stats.retransmits + stats.duplicates > 0, "the noise cost no frame: {stats:?}");
 }
 
@@ -314,7 +313,7 @@ fn streams_with_credit() {
     let (numbers, end) = device.numbers(&mut channel);
     assert_eq!(end, Ok(()));
     assert_eq!(numbers, (1..=200).rev().collect::<Vec<u8>>());
-    let stats = device.client.borrow().stats();
+    let stats = device.client.stats();
     assert_eq!((stats.overruns, stats.stale_items), (0, 0));
 }
 
