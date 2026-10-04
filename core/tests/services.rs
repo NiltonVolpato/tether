@@ -273,7 +273,7 @@ fn dropping_album_art_stops_the_download() {
     drop(ch);
     let sonos = sim.app.sonos.clone();
     sim.run_until(1_000, |_| sonos.borrow().downloads.is_empty());
-    assert_eq!(sim.server.borrow().open_calls(), 0);
+    assert_eq!(sim.server.open_calls(), 0);
 }
 
 #[test]

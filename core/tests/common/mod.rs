@@ -138,17 +138,16 @@ impl<A: ServerApp> Sim<A> {
         while let Some(b) = self.client.poll_transmit(self.now) {
             self.c2s.push(self.now, b);
         }
-        while let Some(b) = self.server.borrow_mut().poll_transmit(self.now) {
+        while let Some(b) = self.server.poll_transmit(self.now) {
             self.s2c.push(self.now, b);
         }
         for chunk in self.c2s.deliver(self.now) {
-            self.server.borrow_mut().receive(&chunk);
+            self.server.receive(&chunk);
         }
         for chunk in self.s2c.deliver(self.now) {
             self.client.receive(&chunk);
         }
-        loop {
-            let Some(event) = self.server.borrow_mut().poll_event() else { break };
+        while let Some(event) = self.server.poll_event() {
             self.app.handle(&self.server, event);
         }
         self.app.tick(&self.server);
@@ -185,7 +184,7 @@ impl<A: ServerApp> Sim<A> {
     pub fn linked(&mut self) -> &mut Self {
         self.run_until(5_000, |s| {
             matches!(s.client.link_state(), LinkState::Linked { .. })
-                && matches!(s.server.borrow().link_state(), LinkState::Linked { .. })
+                && matches!(s.server.link_state(), LinkState::Linked { .. })
         });
         self
     }

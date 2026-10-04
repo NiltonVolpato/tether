@@ -36,13 +36,12 @@ impl Router {
     /// Handles every pending server event.
     pub fn run(&mut self, server: &SharedServer) {
         loop {
-            let Some(event) = server.borrow_mut().poll_event() else { return };
+            let Some(event) = server.poll_event() else { return };
             self.handle(server, event);
         }
     }
 
-    /// Services run without the server borrowed, so their replies and sinks
-    /// can use it.
+    /// Hands `event` to the service it belongs to.
     pub fn handle(&mut self, server: &SharedServer, event: ServerEvent) {
         match event {
             ServerEvent::Call { call_id, method, payload } => {
@@ -60,7 +59,7 @@ impl Router {
             }
         }
         // Calls that were answered or ended since the last event.
-        self.owners.retain(|&id, _| server.borrow().is_open(id));
+        self.owners.retain(|&id, _| server.is_open(id));
     }
 
     fn dispatch(

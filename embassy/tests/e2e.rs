@@ -145,7 +145,7 @@ impl ServerApp for App {
         match event {
             ServerEvent::Call { call_id, payload, .. } => {
                 if self.answers {
-                    server.borrow_mut().respond(call_id, Ok(payload));
+                    server.respond(call_id, Ok(payload));
                 }
             }
             ServerEvent::Open { call_id, payload, .. } => {
@@ -164,9 +164,9 @@ impl ServerApp for App {
         for id in ids {
             while let Some(left) = self.countdowns.get_mut(&id) {
                 if *left == 0 {
-                    let _ = server.borrow_mut().end(id, Ok(()));
+                    let _ = server.end(id, Ok(()));
                     self.countdowns.remove(&id);
-                } else if server.borrow_mut().send(id, vec![*left]).is_ok() {
+                } else if server.send(id, vec![*left]).is_ok() {
                     *left -= 1;
                 } else {
                     break;
@@ -249,7 +249,7 @@ impl Rig {
         let (client, server) = (self.client.clone(), self.server.clone());
         self.run_until(5_000, move || {
             matches!(client.link_state(), LinkState::Linked { .. })
-                && matches!(server.borrow().link_state(), LinkState::Linked { .. })
+                && matches!(server.link_state(), LinkState::Linked { .. })
         });
     }
 }

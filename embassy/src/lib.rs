@@ -74,23 +74,23 @@ impl Endpoint for SharedClient {
 
 impl Endpoint for SharedServer {
     fn receive(&self, bytes: &[u8]) {
-        self.borrow_mut().receive(bytes);
+        SharedServer::receive(self, bytes);
     }
 
     fn poll_transmit(&self, now: u64) -> Option<Vec<u8>> {
-        self.borrow_mut().poll_transmit(now)
+        SharedServer::poll_transmit(self, now)
     }
 
     fn next_deadline(&self) -> Option<u64> {
-        self.borrow().next_deadline()
+        SharedServer::next_deadline(self)
     }
 
     fn link_state(&self) -> LinkState {
-        self.borrow().link_state()
+        SharedServer::link_state(self)
     }
 
     fn io(&self) -> SharedNotify {
-        self.borrow().io()
+        SharedServer::io(self)
     }
 }
 
@@ -133,11 +133,7 @@ pub async fn run_server<A: ServerApp, R: Read, W: Write>(
     tx: W,
 ) -> Result<LinkState, Error<R::Error, W::Error>> {
     run(server, rx, tx, || {
-        // The app runs without the server borrowed, so its replies and sinks
-        // can use it.
-        loop {
-            let event = server.borrow_mut().poll_event();
-            let Some(event) = event else { break };
+        while let Some(event) = server.poll_event() {
             app.borrow_mut().handle(server, event);
         }
         app.borrow_mut().tick(server);

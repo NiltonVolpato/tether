@@ -37,7 +37,6 @@ struct App {
 
 impl ServerApp for App {
     fn handle(&mut self, server: &SharedServer, event: ServerEvent) {
-        let mut server = server.borrow_mut();
         match event {
             ServerEvent::Call { call_id, method: ECHO, payload } => {
                 self.unary_calls += 1;
@@ -65,7 +64,6 @@ impl ServerApp for App {
     }
 
     fn tick(&mut self, server: &SharedServer) {
-        let mut server = server.borrow_mut();
         let mut done = Vec::new();
         for (&call_id, (next, total)) in &mut self.counters {
             while *next < *total {
@@ -154,7 +152,7 @@ fn lost_hello_reply_is_not_a_reboot() {
     sim.linked();
     sim.run(500);
     assert!(matches!(sim.client.link_state(), LinkState::Linked { .. }));
-    assert!(matches!(sim.server.borrow().link_state(), LinkState::Linked { .. }));
+    assert!(matches!(sim.server.link_state(), LinkState::Linked { .. }));
 }
 
 #[test]
@@ -182,7 +180,7 @@ fn peer_reboot_is_detected() {
     sim.server = Server::new(0xBEEF, LinkConfig::default(), 4).shared();
     sim.run_until(1_000, |s| s.client.link_state() == LinkState::PeerRebooted);
     // The rebooted server must not have linked to the doomed client.
-    assert_eq!(sim.server.borrow().link_state(), LinkState::Connecting);
+    assert_eq!(sim.server.link_state(), LinkState::Connecting);
     assert_eq!(call.try_result(), Some(Err(Status::Unavailable)));
 }
 
@@ -191,13 +189,13 @@ fn idle_link_pings_sparingly() {
     let mut sim = clean();
     sim.linked();
     sim.run(10_000);
-    let pings = sim.client.link_stats().pings + sim.server.borrow().link_stats().pings;
+    let pings = sim.client.link_stats().pings + sim.server.link_stats().pings;
     // A ping and its ack keep both sides quiet, so ideally one ping goes out
     // per interval (40 in 10 s). Pings cross when both sides' timers expire
     // within one latency of each other, which adds up to one more per interval.
     assert!((40..=80).contains(&pings), "{pings} pings in 10 s");
     assert!(matches!(sim.client.link_state(), LinkState::Linked { .. }));
-    assert!(matches!(sim.server.borrow().link_state(), LinkState::Linked { .. }));
+    assert!(matches!(sim.server.link_state(), LinkState::Linked { .. }));
 }
 
 #[test]
@@ -207,10 +205,7 @@ fn idle_lossy_link_is_not_lost() {
         sim.linked();
         sim.run(10_000);
         assert!(matches!(sim.client.link_state(), LinkState::Linked { .. }), "seed {seed}");
-        assert!(
-            matches!(sim.server.borrow().link_state(), LinkState::Linked { .. }),
-            "seed {seed}"
-        );
+        assert!(matches!(sim.server.link_state(), LinkState::Linked { .. }), "seed {seed}");
     }
 }
 
@@ -246,11 +241,11 @@ fn server_cancels_calls_when_client_is_lost() {
     let call_id = sim.app.subscriptions[0];
 
     sim.c2s.cut = true;
-    sim.run_until(2_000, |s| s.server.borrow().link_state() == LinkState::PeerLost);
+    sim.run_until(2_000, |s| s.server.link_state() == LinkState::PeerLost);
     sim.step();
     assert_eq!(sim.app.cancelled, [call_id]);
-    assert_eq!(sim.server.borrow().open_calls(), 0);
-    assert_eq!(sim.server.borrow_mut().send(call_id, vec![1]), Err(StreamError::Closed));
+    assert_eq!(sim.server.open_calls(), 0);
+    assert_eq!(sim.server.send(call_id, vec![1]), Err(StreamError::Closed));
 }
 
 // --- Unary ---
@@ -277,7 +272,7 @@ fn deadline_exceeded_cancels_server_side() {
     let call = sim.client.call(BLACK_HOLE, &[], 100);
     sim.run_until(1_000, |s| !s.app.cancelled.is_empty());
     assert_eq!(call.try_result(), Some(Err(Status::DeadlineExceeded)));
-    assert_eq!(sim.server.borrow().open_calls(), 0);
+    assert_eq!(sim.server.open_calls(), 0);
 }
 
 #[test]
@@ -305,7 +300,7 @@ fn dropping_call_cancels_it() {
     drop(call);
     sim.run_until(1_000, |s| s.app.cancelled.len() == 1);
     assert_eq!(sim.client.open_calls(), 0);
-    assert_eq!(sim.server.borrow().open_calls(), 0);
+    assert_eq!(sim.server.open_calls(), 0);
 }
 
 // --- Channels ---
@@ -317,7 +312,7 @@ fn freed_slots_of_many_channels_go_out_in_one_credit_frame() {
     sim.run_until(1_000, |s| s.app.subscriptions.len() == 3);
     let subscriptions = sim.app.subscriptions.clone();
     for &call_id in &subscriptions {
-        sim.server.borrow_mut().send(call_id, vec![1]).unwrap();
+        sim.server.send(call_id, vec![1]).unwrap();
     }
     sim.run(100);
 
@@ -340,7 +335,7 @@ fn freed_slots_of_many_channels_go_out_in_one_credit_frame() {
         .collect();
     assert_eq!(grants, subscriptions.iter().map(|&id| (id, 1)).collect::<Vec<_>>());
     for id in subscriptions {
-        assert_eq!(sim.server.borrow().credit(id), Some(1));
+        assert_eq!(sim.server.credit(id), Some(1));
     }
 }
 
@@ -370,13 +365,13 @@ fn dropping_channel_unsubscribes() {
     let ch = sim.client.open(SUBSCRIBE, &[], 1);
     sim.run_until(1_000, |s| s.app.subscriptions.len() == 1);
     let call_id = sim.app.subscriptions[0];
-    sim.server.borrow_mut().send(call_id, vec![42]).unwrap();
+    sim.server.send(call_id, vec![42]).unwrap();
     sim.wait(1_000, || ch.try_recv());
 
     drop(ch);
     sim.run_until(1_000, |s| s.app.cancelled == [call_id]);
-    assert_eq!(sim.server.borrow_mut().send(call_id, vec![43]), Err(StreamError::Closed));
-    assert_eq!(sim.server.borrow().open_calls(), 0);
+    assert_eq!(sim.server.send(call_id, vec![43]), Err(StreamError::Closed));
+    assert_eq!(sim.server.open_calls(), 0);
     assert_eq!(sim.client.open_calls(), 0);
     assert_eq!(sim.client.stats().stale_items, 0);
 }
@@ -390,13 +385,13 @@ fn item_racing_the_cancel_is_dropped() {
 
     // The server sends before it can know about the drop.
     drop(ch);
-    sim.server.borrow_mut().send(call_id, vec![1]).unwrap();
+    sim.server.send(call_id, vec![1]).unwrap();
     sim.run_until(1_000, |s| s.app.cancelled == [call_id]);
     sim.run(200);
     let stats = sim.client.stats();
     assert_eq!((stats.stale_items, stats.cancels), (1, 1));
     assert_eq!(sim.client.open_calls(), 0);
-    assert_eq!(sim.server.borrow().open_calls(), 0);
+    assert_eq!(sim.server.open_calls(), 0);
 }
 
 #[test]
@@ -407,7 +402,7 @@ fn latest_value_coalesces_while_consumer_is_busy() {
     let call_id = sim.app.subscriptions[0];
 
     for v in 0..100u8 {
-        sim.server.borrow_mut().set_latest(call_id, vec![v]).unwrap();
+        sim.server.set_latest(call_id, vec![v]).unwrap();
         sim.step();
     }
     sim.run(100);
@@ -444,7 +439,7 @@ fn poll_recv_wakes_on_item() {
 
     assert!(ch.poll_recv(&mut cx).is_pending());
     sim.run_until(1_000, |s| s.app.subscriptions.len() == 1);
-    sim.server.borrow_mut().send(sim.app.subscriptions[0], vec![7]).unwrap();
+    sim.server.send(sim.app.subscriptions[0], vec![7]).unwrap();
     sim.run_until(1_000, |_| wakes.0.load(Ordering::Relaxed) > 0);
     assert_eq!(ch.poll_recv(&mut cx), Poll::Ready(Some(vec![7])));
 }
@@ -476,4 +471,33 @@ fn a_waker_can_use_the_client_at_once() {
     client.poll_transmit(100);
     let (_, _, result) = TASK.take().unwrap();
     assert_eq!(result, Some(Err(Status::DeadlineExceeded)));
+}
+
+#[test]
+fn the_io_waker_can_use_the_server_at_once() {
+    // The I/O task's waker polls its task right away, while the app is still
+    // in `respond`.
+    thread_local! {
+        static TASK: RefCell<Option<(SharedServer, Option<usize>)>> = const { RefCell::new(None) };
+    }
+    struct PollAtOnce;
+    impl Wake for PollAtOnce {
+        fn wake(self: Arc<Self>) {
+            TASK.with_borrow_mut(|task| {
+                let (server, open_calls) = task.as_mut().unwrap();
+                *open_calls = Some(server.open_calls());
+            });
+        }
+    }
+
+    let mut sim = clean();
+    sim.linked();
+    let waker = Waker::from(Arc::new(PollAtOnce));
+    let io = sim.server.io();
+    while io.poll_notified(&mut Context::from_waker(&waker)).is_ready() {}
+    TASK.set(Some((sim.server.clone(), None)));
+    let call = sim.client.call(ECHO, &[1], 1_000);
+    assert_eq!(sim.wait(1_000, || call.try_result()), Ok(vec![1]));
+    let (_, open_calls) = TASK.take().unwrap();
+    assert_eq!(open_calls, Some(0));
 }
