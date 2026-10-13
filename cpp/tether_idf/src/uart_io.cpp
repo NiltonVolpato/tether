@@ -66,6 +66,8 @@ UartIo::UartIo(const UartConfig& config)
   ESP_ERROR_CHECK(uart_param_config(port_, &uart));
   ESP_ERROR_CHECK(uart_set_pin(port_, config.tx_pin, config.rx_pin,
                                UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
+  // After the driver's own setup, which sets ESP-IDF's default.
+  ESP_ERROR_CHECK(uart_set_rx_full_threshold(port_, config.rx_full_threshold));
 }
 
 UartIo::~UartIo() {
@@ -200,12 +202,18 @@ void UartIo::handle_event() {
     return;
   }
   switch (event.type) {
+    // Neither flushes: what's buffered is good. Where bytes went missing, the
+    // frame fails its CRC, the deframer starts over at the next delimiter, and
+    // the link retransmits the frame.
     case UART_FIFO_OVF:
-    case UART_BUFFER_FULL:
-      // What's buffered is cut short somewhere; the link retransmits it.
+      // The driver reset the FIFO, dropping what was in it.
       ++stats_.overflows;
       ESP_LOGW(kTag, "receive overflow: bytes lost");
-      uart_flush_input(port_);
+      break;
+    case UART_BUFFER_FULL:
+      // The driver kept the FIFO's bytes, and takes more once read_all()
+      // reads, right after this.
+      ++stats_.buffer_full;
       break;
     case UART_BREAK:
     case UART_PARITY_ERR:

@@ -523,6 +523,8 @@ the wire), so it must be the line's real rate.
   at a time. Not a timer: the queue drains a frame in milliseconds, so a
   retry every 50 ms leaves the line mostly idle.
 - **Stats to look at:** `server.link().stats()` (retransmits, duplicates,
-  errors, the deepest the queue got), `io.stats()` (UART overflows: the I/O
-  task fell behind), `server.stats().lost_rejections`, and on the S3
+  errors, the deepest the queue got), `io.stats()` (`overflows`: bytes lost
+  as the UART's interrupt came late, e.g. behind Wi-Fi on the same core;
+  `buffer_full`: the I/O task fell behind), `server.stats().lost_rejections`,
+  and on the S3
   `client.link_stats()` and `client.stats()`.

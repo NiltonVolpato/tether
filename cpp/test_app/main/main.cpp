@@ -63,7 +63,8 @@ void log_end(const App& app) {
   const auto& stats = server.link().stats();
   ESP_LOGW(kTag,
            "link %s (tx %lu, rx %lu, retransmits %lu, duplicates %lu, crc "
-           "errors %lu, cobs errors %lu, other errors %lu, overflows %lu)",
+           "errors %lu, cobs errors %lu, other errors %lu, overflows %lu, "
+           "buffer full %lu)",
            name(server.link().state()),
            static_cast<unsigned long>(stats.frames_tx),
            static_cast<unsigned long>(stats.frames_rx),
@@ -72,7 +73,8 @@ void log_end(const App& app) {
            static_cast<unsigned long>(stats.crc_errors),
            static_cast<unsigned long>(stats.cobs_errors),
            static_cast<unsigned long>(stats.other_errors),
-           static_cast<unsigned long>(app.io.stats().overflows));
+           static_cast<unsigned long>(app.io.stats().overflows),
+           static_cast<unsigned long>(app.io.stats().buffer_full));
 }
 
 // The I/O task: one link after another.

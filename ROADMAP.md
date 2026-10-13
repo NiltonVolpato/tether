@@ -59,6 +59,9 @@ schema-agnostic layer below it.
       80% and 58%), assuming 0.3 ms turnarounds
 - [ ] Link observability, so a clogged link can be diagnosed on the device: queue depth and
       time in queue, round-trip times, retransmit and error rates
+- [ ] Ack round-trip stat in `LinkStats` (both cores), first: album art spends ~10 ms per frame
+      beyond its 5.6 ms on the wire, between a frame and its ack, and that says which side
+      it's on before a window or a new ack path is designed
 - [x] Credits: the client scans its channels each poll (dropped ones are cancelled) and sends
       all grants in one Credit frame; replaces the handles' outbox
 - [ ] Fixed-capacity memory: bounded tables and queues instead of `Vec`/`BTreeMap`/`VecDeque`
@@ -93,9 +96,24 @@ schema-agnostic layer below it.
 - [x] C++ server: `ServerHooks` (lock, unlock, wake) for threads; `restart` reuses a server for a
       new link, and handles carry an epoch, so ones from an earlier link stay closed; handles
       can be default-made (closed), e.g. to receive into
-- [ ] C++ typed sends start only with room for a `MaxPayload` message, even for a small one, so
-      many small typed sends fill the queue sooner than raw ones; per-method size bounds from
-      the schema would let them start with less
+- [ ] Raw byte messages (`tether.Bytes`, a marker table in `tether.fbs`, since flatc takes only
+      tables as method types): no FlatBuffers table per item (~30 B of album art's 768), and a
+      send copies exactly its size from a span, or writes it in place in one go (a variable
+      size, up to a limit). Rust items are the bytes as they came. Data that arrives in pieces
+      (an HTTP body) still needs somewhere to gather an item: see per-call arenas
+- [ ] Separate limits for what's received, sent and built, instead of one `MaxPayload` for all
+      three: big outgoing frames (raw album art) then don't grow the receive buffer, the
+      retransmit timeout (which counts the peer's largest frame), or the room every typed
+      send waits for (today a whole `MaxPayload`, even for a small message). Declared in the
+      schema with the other payload limits
+- [ ] Per-call arenas (to design): each call's messages in memory it reserves, about what its
+      handler expects, instead of one queue sized for two of the largest frames. The queue
+      would keep each frame's header, CRC and a span over the arena, and COBS-encode from
+      there as now: a payload already in the arena goes out without a copy, and variable-size
+      responses need no worst-case room. A partly gathered item can wait there across reads,
+      which a reservation in the shared queue can't (it must be committed before anything else
+      is sent): album art could gather HTTP body pieces straight into its frames. The memory is
+      the link's until the frame is acked (retransmits read it), so it outlives a cancelled call
 - [x] Cross-language conformance: shared golden frames (`golden/frames.json`, decoded by flatc)
 - [ ] Cross-language conformance: C++ core built into the Rust simulation tests
 - [x] Integration test app (`cpp/test_app`): the C++ server on an ESP32 in QEMU, serving a
@@ -117,8 +135,18 @@ schema-agnostic layer below it.
       runs once when an ack frees the queue or credit arrives, so an event loop retries at once
       instead of on a timer (album art: ~4 s for 100 KB, mostly a 50 ms timer). It also runs when
       the call closes from elsewhere, waiting or not, so idle watches needn't poll `closed()`
+- [x] `tether_idf`: keep the buffered bytes on a receive overflow (no `uart_flush_input`: COBS
+      and the CRC drop the damaged frame, and the good ones before it survive);
+      `UartConfig::rx_full_threshold`, 64 by default (ESP-IDF's 120 leaves 8 bytes, ~50 µs at
+      1.5 Mbaud); `UartStats::buffer_full` apart from `overflows`, as it loses nothing. On the
+      board at 2 Mbaud: 0 overflows and 0 CRC errors in ~4,600 frames, where album art had
+      lost one after each Next
 - [ ] Acks from the UART ISR, only if measured ack latency limits 5 Mbps (it would need the
       link's seq state shared with the ISR)
+- [ ] Sliding window, or acks off the S3's executor, if ack latency still dominates bulk
+      transfers after the round-trip stat and bigger frames. The client's shared state
+      (`Rc<RefCell>`) isn't interrupt-safe: decide between splitting the ack path and a lock
+      first
 - [ ] Recovery from a terminal link (`PeerLost`, `PeerRebooted`) on the S3: the Rust client
       can't restart, so it's a new client with a new boot id, and the apps must move to it.
       A `restart` like the C++ server's (done), or a client that survives its links

@@ -53,16 +53,27 @@ struct UartConfig {
   // The line's rate: the same as the server's LinkConfig, and the peer's.
   uint32_t baud_rate = 921600;
   // The driver's buffers. What arrives while the I/O task is busy waits in
-  // the receive one; past that, it's lost (and retransmitted).
+  // the receive one; past that, in the hardware FIFO, and past that it's lost
+  // (and retransmitted).
   int rx_buffer_size = 4096;
   int tx_buffer_size = 4096;
   int event_queue_size = 16;
+  // Bytes in the hardware FIFO (128 on the ESP32) before the driver's
+  // interrupt empties it. What's left over is the time the interrupt may be
+  // late before bytes are lost: 64 bytes is ~430 µs at 1.5 Mbaud, where
+  // ESP-IDF's default of 120 leaves 8 bytes, ~50 µs.
+  int rx_full_threshold = 64;
 };
 
 struct UartStats {
-  // Bytes were lost because the driver's receive buffer, or the hardware
-  // FIFO, filled up: the I/O task didn't keep up.
+  // Bytes were lost: the hardware FIFO filled up before the driver's interrupt
+  // emptied it (it was late, or the receive buffer was full). The frame they
+  // belonged to fails its CRC and is retransmitted; the rest is kept.
   uint32_t overflows = 0;
+  // The driver's receive buffer filled up, as the I/O task fell behind: the
+  // driver stops taking bytes from the FIFO until it reads. Nothing is lost
+  // unless the FIFO overflows meanwhile.
+  uint32_t buffer_full = 0;
   // Framing, parity and break errors on the line.
   uint32_t line_errors = 0;
 };
