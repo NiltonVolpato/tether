@@ -110,6 +110,9 @@ class Reply {
     return raw_.fail(status);
   }
 
+  // See RawReply::on_ready.
+  void on_ready(Callback ready) const { raw_.on_ready(ready); }
+
  private:
   RawReply raw_;
 };
@@ -148,6 +151,9 @@ class Sink {
       WireStatus status = WireStatus::OK) const {
     return raw_.end(status);
   }
+
+  // See RawSink::on_ready.
+  void on_ready(Callback ready) const { raw_.on_ready(ready); }
 
  private:
   RawSink raw_;

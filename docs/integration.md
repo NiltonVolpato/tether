@@ -301,6 +301,43 @@ for (const auto& network : results) {
   credit and queue room appear. The handler keeps the sink, and `tick` sends
   what the credit allows. This is the simplest choice for a producer that
   never blocks.
+- **With an event loop of its own** (e.g. a reactor running handlers), a
+  handler asks to be told when to retry: `sink.on_ready(tether::Callback(this,
+  &Handler::ready))`, once. After a send fails with `QueueFull` or `NoCredit`,
+  it runs once, when an ack frees the queue or credit comes in. It also runs
+  once when the call closes from elsewhere (the client cancels, the link goes
+  down, or the server restarts), even with nothing waiting to send: a watch
+  that sits idle learns of the cancel at once, to clean up, instead of polling
+  `closed()`. By then `closed()` is true and every send is `Closed`. Ending the
+  call yourself never runs it. It runs on the I/O task, holding the lock: it
+  posts the work to the loop, rather than doing it there. The handler must
+  outlive the call, or clear it first (`sink.on_ready({})`, under the same
+  lock, so it won't run after). Once it has run, the handler must also live
+  until what it posted has run. `reply.on_ready` does the same for replies.
+
+```cpp
+void ArtHandler::start() {
+  sink_.on_ready(tether::Callback(this, &ArtHandler::ready));
+  send_chunks();
+}
+
+// The I/O task: back to the reactor.
+void ArtHandler::ready() {
+  reactor_.post(Callback(this, &ArtHandler::send_chunks));
+}
+
+void ArtHandler::send_chunks() {
+  while (has_chunk()) {
+    const auto sent = sink_.send(build_chunk());
+    if (!sent) {
+      if (sent.error() == tether::CallError::Closed) {
+        finish();
+      }
+      return;  // QueueFull or NoCredit: ready() brings it back.
+    }
+  }
+}
+```
 
 `cpp/test_app/main/greeter_app.h` does both: `Burst` answers in its handler,
 and `Countdown` hands its sink to a task that waits.
@@ -482,7 +519,9 @@ the wire), so it must be the line's real rate.
   build, `wait()` from the I/O task, `router.add` of an unknown service.
 - **`QueueFull` often.** The send queue is two large frames' worth. A build
   needs room for a whole `MaxPayload` message, even for a small one, so many
-  small sends at once also fill it. Use `io.wait`, or send less at a time.
+  small sends at once also fill it. Use `io.wait` or `on_ready`, or send less
+  at a time. Not a timer: the queue drains a frame in milliseconds, so a
+  retry every 50 ms leaves the line mostly idle.
 - **Stats to look at:** `server.link().stats()` (retransmits, duplicates,
   errors, the deepest the queue got), `io.stats()` (UART overflows: the I/O
   task fell behind), `server.stats().lost_rejections`, and on the S3

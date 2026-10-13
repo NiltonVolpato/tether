@@ -3,11 +3,13 @@
 #include <algorithm>
 #include <cstdlib>
 #include <memory>
+#include <utility>
 
 namespace tether {
 namespace {
 
 using State = CallSlot::State;
+using Wait = CallSlot::Wait;
 
 // What a default-made handle answers.
 constexpr std::unexpected kClosed(CallError::Closed);
@@ -38,6 +40,12 @@ std::expected<void, CallError> RawReply::fail(WireStatus status) const {
     status = WireStatus::INTERNAL;
   }
   return server_->respond(epoch_, call_, status, std::span<const std::byte>{});
+}
+
+void RawReply::on_ready(Callback ready) const {
+  if (server_ != nullptr) {
+    server_->on_ready(epoch_, call_, State::Unary, ready);
+  }
 }
 
 std::expected<void, CallError> RawSink::send(
@@ -86,6 +94,12 @@ std::expected<void, CallError> RawSink::end(WireStatus status) const {
   return server_->end_stream(epoch_, call_, status);
 }
 
+void RawSink::on_ready(Callback ready) const {
+  if (server_ != nullptr) {
+    server_->on_ready(epoch_, call_, State::Stream, ready);
+  }
+}
+
 Server::Server(uint32_t boot_id, const LinkConfig& config,
                ServerBuffers buffers, ServerLimits limits)
     : link_buffers_(buffers.link),
@@ -108,16 +122,17 @@ std::size_t Server::open_calls() const {
 void Server::receive(std::span<const std::byte> bytes, Millis now) {
   const Guard guard(*this);
   link_.receive(bytes, now, [this](const Frame& frame) { dispatch(frame); });
-  // The acks in `bytes` may have made room in the send queue.
-  for (CallSlot& slot : slots_) {
-    flush_latest(slot);
-  }
+  after_acks();
   check_link();
 }
 
 std::optional<std::span<const std::byte>> Server::poll_transmit(Millis now) {
   const Guard guard(*this);
   const auto wire = link_.poll_transmit(now);
+  // A frame acked while it was still going out leaves the queue once it's
+  // out, here. What's sent meanwhile leaves `wire` as it is: a piece of a
+  // frame, apart from the queue.
+  after_acks();
   check_link();
   return wire;
 }
@@ -138,6 +153,7 @@ void Server::restart(uint32_t boot_id) {
   const LinkConfig config = link_.config();
   std::destroy_at(&link_);
   std::construct_at(&link_, boot_id, config, link_buffers_);
+  freed_ = link_.freed();
 }
 
 CallSlot* Server::find(uint32_t call) {
@@ -223,6 +239,7 @@ void Server::grant(std::span<const std::byte> payload) {
       slot->credit = static_cast<uint16_t>(
           std::min<uint32_t>(slot->credit + grant->credit(), UINT16_MAX));
       flush_latest(*slot);
+      notify(*slot, Wait::Credit);
     }
   }
 }
@@ -233,7 +250,7 @@ void Server::cancel(uint32_t call) {
     return;
   }
   const MethodId method = slot->method;
-  *slot = {};
+  close(*slot);
   if (dispatcher_ != nullptr) {
     dispatcher_->cancelled(CallId{call}, method);
   }
@@ -262,7 +279,7 @@ void Server::cancel_all() {
     // Freed first, so the dispatcher's replies and sinks for it are closed.
     const CallId call{slot.call_id};
     const MethodId method = slot.method;
-    slot = {};
+    close(slot);
     if (dispatcher_ != nullptr) {
       dispatcher_->cancelled(call, method);
     }
@@ -338,6 +355,7 @@ std::expected<void, CallError> Server::respond(uint32_t epoch, uint32_t call,
   if (sent) {
     *slot = {};
   }
+  wait_if_full(*slot, sent);
   return sent;
 }
 
@@ -350,12 +368,14 @@ std::expected<void, CallError> Server::send_item(uint32_t epoch, uint32_t call,
     return std::unexpected(CallError::Closed);
   }
   if (slot->credit == 0) {
+    slot->waiting = Wait::Credit;
     return std::unexpected(CallError::NoCredit);
   }
   const auto sent = queue({.kind = Kind::Item, .call_id = call}, item);
   if (sent) {
     --slot->credit;
   }
+  wait_if_full(*slot, sent);
   return sent;
 }
 
@@ -379,6 +399,7 @@ std::expected<void, CallError> Server::set_latest(
     }
     // The queue is full: it goes out when there's room, if it can wait.
     if (item.size() > buffer.size()) {
+      wait_if_full(*slot, sent);
       return sent;
     }
   } else if (item.size() > buffer.size()) {
@@ -423,7 +444,54 @@ std::expected<void, CallError> Server::end_stream(uint32_t epoch, uint32_t call,
   if (sent) {
     *slot = {};
   }
+  wait_if_full(*slot, sent);
   return sent;
+}
+
+void Server::wait_if_full(CallSlot& slot,
+                          const std::expected<void, CallError>& sent) {
+  if (sent) {
+    return;
+  }
+  if (sent.error() == CallError::QueueFull) {
+    slot.waiting = Wait::Room;
+  } else if (sent.error() == CallError::NoCredit) {
+    slot.waiting = Wait::Credit;
+  }
+}
+
+void Server::notify(CallSlot& slot, Wait what) {
+  if (what == Wait::Nothing || slot.waiting != what) {
+    return;
+  }
+  slot.waiting = Wait::Nothing;
+  if (slot.ready) {
+    // A copy: the callback may end the call, which clears the slot.
+    const Callback ready = slot.ready;
+    ready();
+  }
+}
+
+void Server::close(CallSlot& slot) {
+  // Freed first: the callback finds the call closed.
+  const Callback ready = std::exchange(slot, {}).ready;
+  if (ready) {
+    ready();
+  }
+}
+
+void Server::after_acks() {
+  if (link_.freed() == freed_) {
+    return;
+  }
+  freed_ = link_.freed();
+  for (CallSlot& slot : slots_) {
+    flush_latest(slot);
+  }
+  // Each once, even if its callback sends and finds no room again.
+  for (CallSlot& slot : slots_) {
+    notify(slot, Wait::Room);
+  }
 }
 
 void Server::flush_latest(CallSlot& slot) {
@@ -455,6 +523,14 @@ uint16_t Server::credit(uint32_t epoch, uint32_t call) {
 bool Server::closed(uint32_t epoch, uint32_t call) {
   const Guard guard(*this);
   return find(epoch, call, State::Stream) == nullptr;
+}
+
+void Server::on_ready(uint32_t epoch, uint32_t call, State state,
+                      Callback ready) {
+  const Guard guard(*this);
+  if (CallSlot* slot = find(epoch, call, state)) {
+    slot->ready = ready;
+  }
 }
 
 }  // namespace tether

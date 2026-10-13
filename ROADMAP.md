@@ -113,6 +113,10 @@ schema-agnostic layer below it.
       of the UART driver's event queue and a wake semaphore, with the link's next deadline as
       the timeout. Handlers run there; other tasks use replies and sinks under its recursive
       mutex, and `wait()` retries a send on `QueueFull`/`NoCredit` each time something arrives
+- [x] `on_ready` on C++ replies and sinks: after a `QueueFull`/`NoCredit`, a `tether::Callback`
+      runs once when an ack frees the queue or credit arrives, so an event loop retries at once
+      instead of on a timer (album art: ~4 s for 100 KB, mostly a 50 ms timer). It also runs when
+      the call closes from elsewhere, waiting or not, so idle watches needn't poll `closed()`
 - [ ] Acks from the UART ISR, only if measured ack latency limits 5 Mbps (it would need the
       link's seq state shared with the ISR)
 - [ ] Recovery from a terminal link (`PeerLost`, `PeerRebooted`) on the S3: the Rust client

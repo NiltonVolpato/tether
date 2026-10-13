@@ -255,6 +255,7 @@ std::optional<Frame> Link::handle(const Frame& frame, Millis now) {
         pop_when_sent_ = true;
       } else {
         queue_.pop();
+        ++freed_;
       }
       oldest_seq_ = next(oldest_seq_);
     }
@@ -356,6 +357,7 @@ std::optional<std::span<const std::byte>> Link::next_piece() {
   sending_ = Sending::Nothing;
   if (std::exchange(pop_when_sent_, false)) {
     queue_.pop();
+    ++freed_;
   }
   return std::nullopt;
 }

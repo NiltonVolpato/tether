@@ -139,6 +139,9 @@ class Link {
   [[nodiscard]] std::optional<uint32_t> peer_boot_id() const;
   [[nodiscard]] const LinkStats& stats() const { return stats_; }
   [[nodiscard]] const LinkConfig& config() const { return config_; }
+  // Counts the frames that left the send queue, acked: when it moves, there's
+  // room for more.
+  [[nodiscard]] uint32_t freed() const { return freed_; }
 
   // Queues a sequenced frame; frames queued before linking go out after.
   std::expected<void, SendError> send(const Header& header,
@@ -230,6 +233,7 @@ class Link {
   CobsStream cobs_;
   // The queue's front was acked while it was going out: it's popped once out.
   bool pop_when_sent_ = false;
+  uint32_t freed_ = 0;
   std::array<std::byte, kPieceSize> piece_{};
 
   // Receive side.

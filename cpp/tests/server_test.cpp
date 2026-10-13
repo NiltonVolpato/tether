@@ -7,7 +7,10 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <array>
+#include <functional>
+#include <numeric>
 #include <optional>
 #include <vector>
 
@@ -359,6 +362,317 @@ std::vector<int> items(const std::vector<Received>& got) {
     }
   }
   return out;
+}
+
+// Counts its callbacks, running `then` in each, if set.
+struct Waiter {
+  int ready = 0;
+  std::function<void()> then;
+
+  void on_ready() {
+    ++ready;
+    if (then) {
+      then();
+    }
+  }
+  Callback callback() { return {this, &Waiter::on_ready}; }
+};
+
+// Sends payload-sized items until the send queue is full.
+void fill(const RawSink& sink) {
+  const std::vector<std::byte> big(kMaxPayload);
+  while (sink.send(big)) {
+  }
+  ASSERT_THAT(sink.send(big), Eq(std::unexpected(CallError::QueueFull)));
+}
+
+TEST_F(ServerTest, AFullQueueIsToldOnceAnAckMakesRoom) {
+  rig.open(20, kMethod, 100);
+  const RawSink sink = recorder.channels[0].sink;
+  fill(sink);
+  // Set after the send failed, it still hears of it: nothing is missed.
+  Waiter waiter;
+  sink.on_ready(waiter.callback());
+  EXPECT_THAT(waiter.ready, Eq(0));
+  // Several acks come in, but it's told once.
+  rig.pump();
+  EXPECT_THAT(waiter.ready, Eq(1));
+  rig.pump();
+  EXPECT_THAT(waiter.ready, Eq(1));
+
+  // Cleared, it's told nothing.
+  sink.on_ready({});
+  fill(sink);
+  rig.pump();
+  EXPECT_THAT(waiter.ready, Eq(1));
+}
+
+TEST_F(ServerTest, ASendThatWentThroughWaitsForNothing) {
+  rig.open(20, kMethod, 1);
+  const RawSink sink = recorder.channels[0].sink;
+  Waiter waiter;
+  sink.on_ready(waiter.callback());
+  ASSERT_TRUE(sink.send(bytes({1})));
+  rig.pump();
+  rig.grant(20, 1);
+  EXPECT_THAT(waiter.ready, Eq(0));
+}
+
+TEST_F(ServerTest, NoCreditIsToldWhenCreditComesNotRoom) {
+  rig.open(20, kMethod, 0);
+  rig.open(21, kMethod, 100);
+  const RawSink starved = recorder.channels[0].sink;
+  Waiter waiter;
+  starved.on_ready(waiter.callback());
+  ASSERT_THAT(starved.send(bytes({1})),
+              Eq(std::unexpected(CallError::NoCredit)));
+  // Acks for another channel's items don't concern it.
+  fill(recorder.channels[1].sink);
+  rig.pump();
+  EXPECT_THAT(waiter.ready, Eq(0));
+  rig.grant(20, 1);
+  EXPECT_THAT(waiter.ready, Eq(1));
+  ASSERT_TRUE(starved.send(bytes({1})));
+}
+
+TEST_F(ServerTest, AFullQueueIsntToldOfCredit) {
+  rig.open(20, kMethod, 100);
+  const RawSink sink = recorder.channels[0].sink;
+  Waiter waiter;
+  sink.on_ready(waiter.callback());
+  fill(sink);
+  // The grant's frame is acked, but the server's frames aren't yet.
+  ASSERT_TRUE(rig.client.send({.kind = Kind::Credit}, credits(20, 1)));
+  while (const auto wire = rig.client.poll_transmit(rig.now)) {
+    rig.server.receive(*wire, rig.now);
+  }
+  EXPECT_THAT(waiter.ready, Eq(0));
+  rig.pump();
+  EXPECT_THAT(waiter.ready, Eq(1));
+}
+
+// A waiting and an idle call of each kind, whose callbacks check, as they run,
+// that their call is closed already.
+class CloseTest : public ServerTest {
+ protected:
+  CloseTest() {
+    rig.request(10, kMethod);
+    rig.request(11, kMethod);
+    rig.open(20, kMethod, 100);
+    rig.open(21, kMethod, 0);
+    for (std::size_t i = 0; i < 2; ++i) {
+      const RawReply reply = recorder.calls[i].reply;
+      const RawSink sink = recorder.channels[i].sink;
+      replies[i].then = [reply] {
+        EXPECT_THAT(reply.send({}), Eq(std::unexpected(CallError::Closed)));
+        EXPECT_THAT(reply.fail(WireStatus::NOT_FOUND),
+                    Eq(std::unexpected(CallError::Closed)));
+      };
+      sinks[i].then = [sink] {
+        EXPECT_TRUE(sink.closed());
+        EXPECT_THAT(sink.send({}), Eq(std::unexpected(CallError::Closed)));
+        EXPECT_THAT(sink.set_latest({}),
+                    Eq(std::unexpected(CallError::Closed)));
+        EXPECT_THAT(sink.end(), Eq(std::unexpected(CallError::Closed)));
+      };
+      reply.on_ready(replies[i].callback());
+      sink.on_ready(sinks[i].callback());
+    }
+    // Reply 10 and sink 20 wait for room; 11 and 21 never sent.
+    fill(recorder.channels[0].sink);
+    EXPECT_THAT(
+        recorder.calls[0].reply.send(std::vector<std::byte>(kMaxPayload)),
+        Eq(std::unexpected(CallError::QueueFull)));
+  }
+
+  // Each was told once.
+  void expect_told_once() {
+    for (const Waiter& waiter : replies) {
+      EXPECT_THAT(waiter.ready, Eq(1));
+    }
+    for (const Waiter& waiter : sinks) {
+      EXPECT_THAT(waiter.ready, Eq(1));
+    }
+  }
+
+  std::array<Waiter, 2> replies;
+  std::array<Waiter, 2> sinks;
+};
+
+TEST_F(CloseTest, ACancelTellsEachCallOnceWaitingOrNot) {
+  // Only the cancels and their acks cross: the server's queue stays full, so
+  // nobody is told of room first.
+  for (const uint32_t call : {10, 11, 20, 21}) {
+    ASSERT_TRUE(rig.client.send({.kind = Kind::Cancel, .call_id = call}, {}));
+    while (const auto wire = rig.client.poll_transmit(rig.now)) {
+      rig.server.receive(*wire, rig.now);
+    }
+    const auto ack = rig.server.poll_transmit(rig.now);
+    ASSERT_TRUE(ack);
+    rig.client.receive(*ack, rig.now, [](const Frame&) {});
+  }
+  expect_told_once();
+  // Nothing after: not the acks for what was queued, nor a later call in the
+  // same slot.
+  rig.pump();
+  rig.open(22, kMethod, 0);
+  ASSERT_THAT(recorder.channels[2].sink.send({}),
+              Eq(std::unexpected(CallError::NoCredit)));
+  rig.grant(22, 1);
+  rig.cancel(22);
+  expect_told_once();
+}
+
+TEST_F(CloseTest, ARestartTellsEachCallOnce) {
+  rig.server.restart(0xB2);
+  expect_told_once();
+  rig.server.restart(0xB3);
+  expect_told_once();
+}
+
+TEST_F(CloseTest, ARebootedPeerTellsEachCallOnce) {
+  ClientLink rebooted(0xA2);
+  const auto hello = rebooted.poll_transmit(rig.now);
+  ASSERT_TRUE(hello);
+  rig.server.receive(*hello, rig.now);
+  ASSERT_THAT(rig.server.link().state(), Eq(LinkState::PeerRebooted));
+  expect_told_once();
+}
+
+TEST_F(CloseTest, ALostPeerTellsEachCallOnce) {
+  while (!is_terminal(rig.server.link().state())) {
+    rig.now = *rig.server.next_deadline();
+    while (rig.server.poll_transmit(rig.now)) {
+    }
+  }
+  ASSERT_THAT(rig.server.link().state(), Eq(LinkState::PeerLost));
+  expect_told_once();
+}
+
+TEST_F(ServerTest, EndingOrAnsweringACallTellsItNothing) {
+  rig.request(10, kMethod);
+  rig.request(11, kMethod);
+  rig.open(20, kMethod, 0);
+  rig.open(21, kMethod, 100);
+  const RawReply waiting_reply = recorder.calls[0].reply;
+  const RawReply idle_reply = recorder.calls[1].reply;
+  const RawSink starved = recorder.channels[0].sink;
+  const RawSink filler = recorder.channels[1].sink;  // No callback.
+  std::array<Waiter, 3> waiters;
+  waiting_reply.on_ready(waiters[0].callback());
+  idle_reply.on_ready(waiters[1].callback());
+  starved.on_ready(waiters[2].callback());
+  ASSERT_THAT(starved.send({}), Eq(std::unexpected(CallError::NoCredit)));
+  fill(filler);
+  ASSERT_THAT(waiting_reply.send(std::vector<std::byte>(kMaxPayload)),
+              Eq(std::unexpected(CallError::QueueFull)));
+
+  // A small answer still fits.
+  ASSERT_TRUE(waiting_reply.fail(WireStatus::NOT_FOUND));
+  rig.pump();
+  ASSERT_TRUE(idle_reply.send({}));
+  ASSERT_TRUE(starved.end());
+  ASSERT_TRUE(filler.end());
+  // An idle channel, ended.
+  rig.pump();
+  rig.open(22, kMethod, 0);
+  const RawSink idle = recorder.channels[2].sink;
+  Waiter idle_waiter;
+  idle.on_ready(idle_waiter.callback());
+  ASSERT_TRUE(idle.end());
+
+  rig.grant(20, 1);
+  for (const uint32_t call : {10, 11, 20, 21, 22}) {
+    rig.cancel(call);
+  }
+  rig.server.restart(0xB2);
+  for (const Waiter& waiter : waiters) {
+    EXPECT_THAT(waiter.ready, Eq(0));
+  }
+  EXPECT_THAT(idle_waiter.ready, Eq(0));
+}
+
+TEST_F(ServerTest, AClosingCallWithoutACallbackRunsNone) {
+  rig.open(20, kMethod, 0);
+  rig.open(21, kMethod, 0);
+  const RawSink never_set = recorder.channels[0].sink;
+  const RawSink cleared = recorder.channels[1].sink;
+  Waiter waiter;
+  cleared.on_ready(waiter.callback());
+  cleared.on_ready({});
+  // Waiting, too.
+  ASSERT_THAT(never_set.send({}), Eq(std::unexpected(CallError::NoCredit)));
+  ASSERT_THAT(cleared.send({}), Eq(std::unexpected(CallError::NoCredit)));
+  rig.cancel(20);
+  rig.cancel(21);
+  EXPECT_THAT(waiter.ready, Eq(0));
+  EXPECT_TRUE(never_set.closed());
+  EXPECT_TRUE(cleared.closed());
+}
+
+TEST_F(ServerTest, AReplyIsToldWhenThereIsRoom) {
+  rig.request(10, kMethod);
+  rig.open(20, kMethod, 100);
+  const RawReply reply = recorder.calls[0].reply;
+  Waiter waiter;
+  reply.on_ready(waiter.callback());
+  fill(recorder.channels[0].sink);
+  const std::vector<std::byte> big(kMaxPayload);
+  ASSERT_THAT(reply.send(big), Eq(std::unexpected(CallError::QueueFull)));
+  waiter.then = [&] { ASSERT_TRUE(reply.send(big)); };
+  rig.pump();
+  EXPECT_THAT(waiter.ready, Eq(1));
+  EXPECT_THAT(rig.take().back().header.kind, Eq(Kind::Response));
+}
+
+TEST_F(ServerTest, AnAckWhileTheFrameIsStillGoingOutTellsOnceItsOut) {
+  rig.open(20, kMethod, 100);
+  const RawSink sink = recorder.channels[0].sink;
+  Waiter waiter;
+  sink.on_ready(waiter.callback());
+  fill(sink);
+  // The first frame goes out, and is retransmitted before its ack comes.
+  std::vector<std::byte> first;
+  while (const auto wire = rig.server.poll_transmit(rig.now)) {
+    first.insert(first.end(), wire->begin(), wire->end());
+  }
+  rig.now += 1s;
+  ASSERT_TRUE(rig.server.poll_transmit(rig.now));
+  rig.client.receive(first, rig.now, [](const Frame&) {});
+  while (const auto wire = rig.client.poll_transmit(rig.now)) {
+    rig.server.receive(*wire, rig.now);
+  }
+  // Acked, but it leaves the queue only once the retransmit is out.
+  EXPECT_THAT(waiter.ready, Eq(0));
+  while (rig.server.poll_transmit(rig.now)) {
+  }
+  EXPECT_THAT(waiter.ready, Eq(1));
+}
+
+TEST_F(ServerTest, AStreamRetriedFromItsCallbackNeedsNoTimer) {
+  rig.open(20, kMethod, 100);
+  const RawSink sink = recorder.channels[0].sink;
+  constexpr int kItems = 10;
+  int next = 0;
+  Waiter waiter;
+  // What a handler would post to its own thread: send until there's no room.
+  waiter.then = [&] {
+    while (next < kItems) {
+      if (!sink.send(std::vector<std::byte>(kMaxPayload, std::byte(next)))) {
+        return;
+      }
+      ++next;
+    }
+  };
+  sink.on_ready(waiter.callback());
+  waiter.then();
+  ASSERT_LT(next, kItems);  // It had to wait.
+
+  rig.pump();
+  EXPECT_THAT(next, Eq(kItems));
+  std::vector<int> want(kItems);
+  std::ranges::iota(want, 0);
+  EXPECT_THAT(items(rig.take()), ElementsAreArray(want));
 }
 
 TEST_F(ServerTest, LatestGoesAtOnceWithCredit) {
@@ -731,6 +1045,23 @@ TEST_F(ServerTest, TypedSinkBuildsItemsAndLatestValues) {
   EXPECT_THAT(as_hello(got[0].payload)->boot_id(), Eq(1U));
   EXPECT_THAT(as_hello(got[1].payload)->boot_id(), Eq(4U));
   ASSERT_TRUE(sink.end(WireStatus::ABORTED));
+}
+
+TEST_F(ServerTest, TypedHandlesHaveCallbacksToo) {
+  rig.request(10, kMethod);
+  rig.open(20, kMethod, 0);
+  const Reply<wire::Hello> reply(recorder.calls[0].reply);
+  const Sink<wire::Hello> sink(recorder.channels[0].sink);
+  Waiter reply_waiter;
+  Waiter sink_waiter;
+  reply.on_ready(reply_waiter.callback());
+  sink.on_ready(sink_waiter.callback());
+  ASSERT_THAT(sink.send(hello(1, 2)), Eq(std::unexpected(CallError::NoCredit)));
+  rig.cancel(10);
+  rig.cancel(20);
+  // Waiting or not, a cancel tells them.
+  EXPECT_THAT(reply_waiter.ready, Eq(1));
+  EXPECT_THAT(sink_waiter.ready, Eq(1));
 }
 
 TEST_F(ServerTest, ABuildRunsOnlyWhenItsMessageCanGo) {

@@ -20,6 +20,7 @@
 #include <optional>
 #include <span>
 
+#include "tether/callback.h"
 #include "tether/descriptor.h"
 #include "tether/function_ref.h"
 #include "tether/link.h"
@@ -69,6 +70,10 @@ class RawReply {
   // Answers with an error. `status` must not be OK: that's answered as
   // INTERNAL, a handler bug.
   [[nodiscard]] std::expected<void, CallError> fail(WireStatus status) const;
+  // Calls `ready` after an answer finds the send queue full, once it may not
+  // be, and when the call closes without an answer (the client cancelled, the
+  // link went down, or the server restarted): as RawSink::on_ready.
+  void on_ready(Callback ready) const;
 
  private:
   friend class Server;
@@ -116,6 +121,25 @@ class RawSink {
   // leaves it open, to end again later.
   [[nodiscard]] std::expected<void, CallError> end(
       WireStatus status = WireStatus::OK) const;
+  // Calls `ready` when a send that found no room may go through: after a send,
+  // set_latest or end fails, `ready` runs once, when an ack frees the send
+  // queue (after QueueFull) or the client grants credit (after NoCredit). It
+  // also runs once when the channel closes from elsewhere (the client
+  // cancelled, the link went down, or the server restarted), waiting or not:
+  // closed() is true by then, and every send is Closed. A retry, or closed(),
+  // tells which. Ending it yourself doesn't run it, and once the channel is
+  // closed it never runs again. A failure before it's set counts too. Set it
+  // once, e.g. when the channel opens: it's kept until the channel closes, and
+  // an empty Callback clears it.
+  //
+  // It runs on the thread that drives the server (receive, poll_transmit,
+  // restart: the I/O loop's), always holding the server's lock: it mustn't
+  // block. on_ready takes the lock too, so once it has cleared the callback,
+  // that isn't running and won't run. The callback may send, or hand the work
+  // to the handler's own thread. Its object must outlive the channel, or clear
+  // it first; and once it has run, the object must stay alive until the work it
+  // handed off has run.
+  void on_ready(Callback ready) const;
 
  private:
   friend class Server;
@@ -161,6 +185,9 @@ class ServerHooks {
 // An open call: waiting for its response, or a channel.
 struct CallSlot {
   enum class State : uint8_t { Free, Unary, Stream };
+  // What a send that failed is waiting for: room in the send queue
+  // (QueueFull), or credit (NoCredit).
+  enum class Wait : uint8_t { Nothing, Room, Credit };
 
   State state = State::Free;
   uint32_t call_id = 0;
@@ -171,6 +198,9 @@ struct CallSlot {
   // slot's part of the server's latest-value memory.
   bool has_latest = false;
   uint16_t latest_size = 0;
+  // `ready` runs once that comes (see RawSink::on_ready).
+  Wait waiting = Wait::Nothing;
+  Callback ready{};
 };
 
 struct ServerStats {
@@ -296,6 +326,18 @@ class Server {
                                             WireStatus status);
   uint16_t credit(uint32_t epoch, uint32_t call);
   bool closed(uint32_t epoch, uint32_t call);
+  void on_ready(uint32_t epoch, uint32_t call, CallSlot::State state,
+                Callback ready);
+  // A send that found no room or no credit: the slot waits for it.
+  static void wait_if_full(CallSlot& slot,
+                           const std::expected<void, CallError>& sent);
+  // Runs the slot's callback, once, if it waits for `what`.
+  static void notify(CallSlot& slot, CallSlot::Wait what);
+  // Frees a slot the client or the link closed, and runs its callback.
+  void close(CallSlot& slot);
+  // Once acks freed the send queue: waiting values go out, then waiting slots
+  // are notified.
+  void after_acks();
   // Sends a slot's waiting value, if there's credit and room.
   void flush_latest(CallSlot& slot);
   // The slot's part of the latest-value memory: 8-aligned at both ends.
@@ -311,6 +353,8 @@ class Server {
   ServerStats stats_{};
   // Counts restarts: a handle from an earlier link is closed.
   uint32_t epoch_ = 0;
+  // The link's freed() when the server last looked.
+  uint32_t freed_ = 0;
   bool building_ = false;
 };
 
