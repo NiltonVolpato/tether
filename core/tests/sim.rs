@@ -13,7 +13,7 @@ use common::{ServerApp, Sim};
 use tether::{MethodId, RawCall, RawChannel, Status, StreamError, Transport};
 use tether_core::client::{Call, Channel, Client, SharedClient};
 use tether_core::frame::{self, Deframer, FrameError, Header};
-use tether_core::link::{LinkConfig, LinkState};
+use tether_core::link::{AckWaits, Link, LinkConfig, LinkState};
 use tether_core::server::{Server, ServerEvent, SharedServer};
 use tether_core::wire::{self, Kind};
 
@@ -500,4 +500,70 @@ fn the_io_waker_can_use_the_server_at_once() {
     assert_eq!(sim.wait(1_000, || call.try_result()), Ok(vec![1]));
     let (_, open_calls) = TASK.take().unwrap();
     assert_eq!(open_calls, Some(0));
+}
+
+/// Moves bytes between two links at `now` until neither has more to send.
+fn exchange(a: &mut Link, b: &mut Link, now: u64) {
+    loop {
+        let mut moved = false;
+        while let Some(wire) = a.poll_transmit(now) {
+            b.receive(&wire);
+            moved = true;
+        }
+        while let Some(wire) = b.poll_transmit(now) {
+            a.receive(&wire);
+            moved = true;
+        }
+        if !moved {
+            return;
+        }
+    }
+}
+
+#[test]
+fn acks_are_timed_beyond_the_frames_own_time_on_the_wire() {
+    let cfg = LinkConfig::default();
+    let mut a = Link::new(0xA1, cfg);
+    let mut b = Link::new(0xB1, cfg);
+    exchange(&mut a, &mut b, 0);
+    let mut now = 0;
+    let mut acked_after = |a: &mut Link, b: &mut Link, payload: &[u8], wait: u64| {
+        a.send(Header::new(Kind::Item), payload.to_vec());
+        b.receive(&a.poll_transmit(now).unwrap());
+        let ack = b.poll_transmit(now).unwrap();
+        now += wait;
+        a.receive(&ack);
+        assert_eq!(a.poll_transmit(now), None);
+    };
+
+    // ~290 bytes, ~3.1 ms at 921600: acked 15 ms after it went out, it waited
+    // ~12 ms for its ack.
+    acked_after(&mut a, &mut b, &[7; 256], 15);
+    let waits = a.stats().ack_waits;
+    assert_eq!((waits.count, waits.max_ms, waits.total_ms), (1, 12, 12));
+    // Acked in the same millisecond: no wait, not a negative one.
+    acked_after(&mut a, &mut b, &[], 0);
+    let waits = a.stats().ack_waits;
+    assert_eq!((waits.count, waits.max_ms, waits.total_ms), (2, 12, 12));
+    assert_eq!(waits.buckets, [1, 0, 0, 0, 1, 0, 0]);
+
+    // A frame acked after a retransmit isn't timed.
+    a.send(Header::new(Kind::Item), Vec::new());
+    a.poll_transmit(now).unwrap(); // Lost.
+    now = a.next_deadline().unwrap();
+    b.receive(&a.poll_transmit(now).unwrap());
+    a.receive(&b.poll_transmit(now).unwrap());
+    assert_eq!(a.poll_transmit(now), None);
+    assert_eq!(a.stats().retransmits, 1);
+    assert_eq!(a.stats().ack_waits.count, 2);
+}
+
+#[test]
+fn ack_waits_bucket_by_powers_of_two() {
+    let mut waits = AckWaits::default();
+    for ms in [0, 1, 2, 3, 4, 7, 8, 15, 16, 31, 32, 1000] {
+        waits.add(ms);
+    }
+    assert_eq!(waits.buckets, [1, 1, 2, 2, 2, 2, 2]);
+    assert_eq!((waits.max_ms, waits.total_ms), (1000, 1119));
 }

@@ -1,6 +1,7 @@
 #include "tether/link.h"
 
 #include <algorithm>
+#include <bit>
 #include <cstdlib>
 #include <cstring>
 
@@ -8,6 +9,8 @@
 
 namespace tether {
 namespace {
+
+using std::chrono::microseconds;
 
 // Sequence numbers run 1..=65535; 0 marks unsequenced frames.
 uint16_t next(uint16_t seq) {
@@ -18,7 +21,20 @@ uint16_t prev(uint16_t seq) {
   return seq == 1 ? UINT16_MAX : static_cast<uint16_t>(seq - 1);
 }
 
+// `wire_size` bytes' time on the wire (8N1: 10 bits a byte).
+microseconds wire_time(std::size_t wire_size, uint32_t baud_rate) {
+  const uint64_t bits = wire_size * 10ULL;
+  return microseconds(bits * 1'000'000 / std::max<uint32_t>(baud_rate, 1));
+}
+
 }  // namespace
+
+void AckWaits::add(uint32_t ms) {
+  ++count;
+  total_ms += ms;
+  max_ms = std::max(max_ms, ms);
+  ++buckets[std::min<std::size_t>(std::bit_width(ms), kBuckets - 1)];
+}
 
 namespace detail {
 
@@ -176,8 +192,10 @@ std::optional<std::span<const std::byte>> Link::poll_transmit(Millis now) {
   }
   in_flight_ = true;
   sent_at_ = now;
-  // At most this long once encoded.
-  timeout_ = retransmit_timeout(cobs_max_size(queue_.front().size()) + 1);
+  // At most this long once encoded: within a byte or two of its size.
+  const std::size_t wire_size = cobs_max_size(queue_.front().size()) + 1;
+  timeout_ = retransmit_timeout(wire_size);
+  wire_time_ = wire_time(wire_size, config_.baud_rate);
   retransmits_ = 0;
   return transmit(Sending::Queued);
 }
@@ -249,6 +267,13 @@ std::optional<Frame> Link::handle(const Frame& frame, Millis now) {
   if (frame.header.kind == Kind::Ack) {
     if (in_flight_ && seq == oldest_seq_) {
       in_flight_ = false;
+      if (retransmits_ == 0) {
+        const auto waited = std::max(microseconds(now - sent_at_) - wire_time_,
+                                     microseconds(0));
+        // Rounded: `now` itself is whole milliseconds.
+        stats_.ack_waits.add(
+            static_cast<uint32_t>((waited.count() + 500) / 1000));
+      }
       // An ack of an earlier transmission, while it's retransmitted: what's
       // being written still comes from the queue.
       if (sending_ == Sending::Queued) {

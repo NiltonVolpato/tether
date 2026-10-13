@@ -63,6 +63,24 @@ enum class LinkState : uint8_t {
   return state == LinkState::PeerRebooted || state == LinkState::PeerLost;
 }
 
+// How long the peer took to ack frames, beyond their own time on the wire:
+// its latency to answer, plus ours to notice (the time receive() is called
+// with). Only frames acked at their first send count: a retransmitted one's
+// ack doesn't say which send it answers.
+struct AckWaits {
+  // buckets[i] counts waits under 2^i ms: under 1, 2, 4, 8, 16 and 32 ms, and
+  // the last, 32 ms or more.
+  static constexpr std::size_t kBuckets = 7;
+
+  uint32_t count = 0;
+  // With count, the mean.
+  uint64_t total_ms = 0;
+  uint32_t max_ms = 0;
+  std::array<uint32_t, kBuckets> buckets{};
+
+  void add(uint32_t ms);
+};
+
 struct LinkStats {
   uint32_t frames_tx = 0;
   uint32_t frames_rx = 0;
@@ -74,6 +92,7 @@ struct LinkStats {
   uint32_t other_errors = 0;
   // The most of the send queue ever in use, in bytes.
   std::size_t max_queue = 0;
+  AckWaits ack_waits;
 };
 
 enum class SendError : uint8_t {
@@ -220,6 +239,8 @@ class Link {
   bool in_flight_ = false;
   Millis sent_at_{};
   Millis timeout_{};
+  // The in-flight frame's time on the wire, for its ack's wait.
+  std::chrono::microseconds wire_time_{};
   uint32_t retransmits_ = 0;
   std::optional<uint16_t> ack_due_;
   bool hello_reply_due_ = false;

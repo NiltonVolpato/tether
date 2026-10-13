@@ -489,5 +489,50 @@ TEST(Link, AnAckDuringARetransmitWaitsForItToGoOut) {
   EXPECT_THAT(pair.received[0].header.call_id, Eq(2U));
 }
 
+TEST(Link, TimesAcksBeyondTheFramesOwnTimeOnTheWire) {
+  Pair pair;
+  const AckWaits& waits = pair.a.stats().ack_waits;
+  const auto acked_after = [&](std::size_t size, Millis wait) {
+    ASSERT_TRUE(pair.a.send({.kind = Kind::Item}, payload_of(size, 1)));
+    pair.b.receive(drain(pair.a, pair.now), pair.now, [](const Frame&) {});
+    const auto ack = drain(pair.b, pair.now);
+    pair.now += wait;
+    pair.a.receive(ack, pair.now, [](const Frame&) {});
+  };
+
+  // ~290 bytes, ~3.1 ms at 921600: acked 15 ms after it started, it waited
+  // ~12 ms for its ack.
+  acked_after(kMaxPayload, 15ms);
+  EXPECT_THAT(waits.count, Eq(1U));
+  EXPECT_THAT(waits.max_ms, Eq(12U));
+  EXPECT_THAT(waits.total_ms, Eq(12U));
+  // Acked in the same millisecond: no wait, not a negative one.
+  acked_after(0, 0ms);
+  EXPECT_THAT(waits.count, Eq(2U));
+  EXPECT_THAT(waits.max_ms, Eq(12U));
+  EXPECT_THAT(waits.total_ms, Eq(12U));
+  EXPECT_THAT(waits.buckets, ElementsAreArray({1U, 0U, 0U, 0U, 1U, 0U, 0U}));
+
+  // A frame acked after a retransmit isn't timed.
+  ASSERT_TRUE(pair.a.send({.kind = Kind::Item}, {}));
+  (void)drain(pair.a, pair.now);  // Lost.
+  pair.now = *pair.a.next_deadline();
+  pair.b.receive(drain(pair.a, pair.now), pair.now, [](const Frame&) {});
+  pair.a.receive(drain(pair.b, pair.now), pair.now, [](const Frame&) {});
+  EXPECT_THAT(pair.a.stats().retransmits, Eq(1U));
+  EXPECT_THAT(waits.count, Eq(2U));
+}
+
+TEST(AckWaits, BucketsByPowersOfTwo) {
+  AckWaits waits;
+  for (const uint32_t ms :
+       {0U, 1U, 2U, 3U, 4U, 7U, 8U, 15U, 16U, 31U, 32U, 1000U}) {
+    waits.add(ms);
+  }
+  EXPECT_THAT(waits.buckets, ElementsAreArray({1U, 1U, 2U, 2U, 2U, 2U, 2U}));
+  EXPECT_THAT(waits.max_ms, Eq(1000U));
+  EXPECT_THAT(waits.total_ms, Eq(1119U));
+}
+
 }  // namespace
 }  // namespace tether

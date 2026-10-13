@@ -59,9 +59,11 @@ schema-agnostic layer below it.
       80% and 58%), assuming 0.3 ms turnarounds
 - [ ] Link observability, so a clogged link can be diagnosed on the device: queue depth and
       time in queue, round-trip times, retransmit and error rates
-- [ ] Ack round-trip stat in `LinkStats` (both cores), first: album art spends ~10 ms per frame
-      beyond its 5.6 ms on the wire, between a frame and its ack, and that says which side
-      it's on before a window or a new ack path is designed
+- [x] `LinkStats::ack_waits` (both cores): how long the peer took to ack each frame beyond its
+      own time on the wire, for frames acked at their first send: count, total, max, and a
+      histogram in powers of two up to 32 ms. On the board at 2 Mbaud, the S3 acked in 4 ms on
+      average (max 26 ms, a quarter at 8–16 ms during album art) over 1,260 frames: not what
+      limits album art, which waits on the co-processor's download (TCP window, power save)
 - [x] Credits: the client scans its channels each poll (dropped ones are cancelled) and sends
       all grants in one Credit frame; replaces the handles' outbox
 - [ ] Fixed-capacity memory: bounded tables and queues instead of `Vec`/`BTreeMap`/`VecDeque`
@@ -143,8 +145,9 @@ schema-agnostic layer below it.
       lost one after each Next
 - [ ] Acks from the UART ISR, only if measured ack latency limits 5 Mbps (it would need the
       link's seq state shared with the ISR)
-- [ ] Sliding window, or acks off the S3's executor, if ack latency still dominates bulk
-      transfers after the round-trip stat and bigger frames. The client's shared state
+- [ ] Sliding window, or acks off the S3's executor, if ack latency comes to dominate bulk
+      transfers. Not now: acks take 4 ms against a chunk's 4 ms on the wire, and album art is
+      limited by its download. The client's shared state
       (`Rc<RefCell>`) isn't interrupt-safe: decide between splitting the ack path and a lock
       first
 - [ ] Recovery from a terminal link (`PeerLost`, `PeerRebooted`) on the S3: the Rust client

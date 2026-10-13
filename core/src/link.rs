@@ -75,6 +75,31 @@ impl LinkState {
     }
 }
 
+/// How long the peer took to ack frames, beyond their own time on the wire: its
+/// latency to answer, plus ours to notice (the `poll_transmit` after the ack
+/// arrived). Only frames acked at their first send count: a retransmitted one's
+/// ack doesn't say which send it answers.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct AckWaits {
+    pub count: u32,
+    /// With `count`, the mean.
+    pub total_ms: u64,
+    pub max_ms: u32,
+    /// `buckets[i]` counts waits under 2^i ms: under 1, 2, 4, 8, 16 and 32 ms,
+    /// and the last, 32 ms or more.
+    pub buckets: [u32; 7],
+}
+
+impl AckWaits {
+    pub fn add(&mut self, ms: u32) {
+        self.count += 1;
+        self.total_ms += u64::from(ms);
+        self.max_ms = self.max_ms.max(ms);
+        let bucket = (u32::BITS - ms.leading_zeros()) as usize;
+        self.buckets[bucket.min(self.buckets.len() - 1)] += 1;
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct LinkStats {
     pub frames_tx: u32,
@@ -86,6 +111,7 @@ pub struct LinkStats {
     pub crc_errors: u32,
     pub other_errors: u32,
     pub max_queue: usize,
+    pub ack_waits: AckWaits,
 }
 
 struct InFlight {
@@ -114,6 +140,9 @@ pub struct Link {
     // RX
     /// A valid frame arrived since the last `poll_transmit`, which has the time.
     heard: bool,
+    /// The in-flight frame was acked at its first send since the last
+    /// `poll_transmit`, which times it: when it was sent, and its size.
+    acked: Option<(u64, usize)>,
     last_heard_at: u64,
     expected_seq: u16,
     delivered: VecDeque<Frame>,
@@ -145,6 +174,7 @@ impl Link {
             last_hello_at: None,
             now: 0,
             heard: false,
+            acked: None,
             last_heard_at: 0,
             expected_seq: 1,
             delivered: VecDeque::new(),
@@ -214,6 +244,15 @@ impl Link {
     fn next_transmit(&mut self, now: u64) -> Option<Vec<u8>> {
         if core::mem::take(&mut self.heard) {
             self.last_heard_at = now;
+        }
+        if let Some((sent_at, wire_len)) = self.acked.take() {
+            // 8N1: 10 bits a byte.
+            let wire_us = wire_len as u64 * 10 * 1_000_000 / u64::from(self.cfg.baud_rate.max(1));
+            let waited_us =
+                now.saturating_sub(sent_at).saturating_mul(1000).saturating_sub(wire_us);
+            // Rounded: `now` itself is whole milliseconds.
+            let ms = u32::try_from((waited_us + 500) / 1000).unwrap_or(u32::MAX);
+            self.stats.ack_waits.add(ms);
         }
         if self.state.is_terminal() {
             return None;
@@ -287,8 +326,10 @@ impl Link {
         match (self.state, frame.header.kind) {
             (_, Kind::Hello) => self.handle_hello(&frame.payload),
             (LinkState::Linked { .. }, Kind::Ack) => {
-                if self.in_flight.as_ref().is_some_and(|f| f.seq == frame.header.seq) {
-                    self.in_flight = None;
+                if let Some(f) = self.in_flight.take_if(|f| f.seq == frame.header.seq)
+                    && f.retransmits == 0
+                {
+                    self.acked = Some((f.sent_at, f.wire.len()));
                 }
             }
             (LinkState::Linked { .. }, _) if frame.header.seq != 0 => {
