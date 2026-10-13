@@ -140,6 +140,9 @@ class Sink {
 
   [[nodiscard]] uint16_t credit() const { return raw_.credit(); }
 
+  // See RawSink::closed.
+  [[nodiscard]] bool closed() const { return raw_.closed(); }
+
   // See RawSink::end.
   [[nodiscard]] std::expected<void, CallError> end(
       WireStatus status = WireStatus::OK) const {

@@ -107,6 +107,11 @@ class RawSink {
       MessageBuilder build) const;
   // Items that can be sent right now; 0 once closed.
   [[nodiscard]] uint16_t credit() const;
+  // Whether the channel is over: the client cancelled, it was ended, or the
+  // server restarted. Once true it stays true, so acting on it is safe, e.g.
+  // to stop work nobody will receive. False promises nothing: a send may
+  // still find the channel closed, so handle its result anyway.
+  [[nodiscard]] bool closed() const;
   // Closes the channel, dropping a value still waiting for credit. `QueueFull`
   // leaves it open, to end again later.
   [[nodiscard]] std::expected<void, CallError> end(
@@ -290,6 +295,7 @@ class Server {
   std::expected<void, CallError> end_stream(uint32_t epoch, uint32_t call,
                                             WireStatus status);
   uint16_t credit(uint32_t epoch, uint32_t call);
+  bool closed(uint32_t epoch, uint32_t call);
   // Sends a slot's waiting value, if there's credit and room.
   void flush_latest(CallSlot& slot);
   // The slot's part of the latest-value memory: 8-aligned at both ends.

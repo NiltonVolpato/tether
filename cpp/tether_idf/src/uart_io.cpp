@@ -35,14 +35,23 @@ UartIo::UartIo(const UartConfig& config)
   ESP_ERROR_CHECK(uart_driver_install(port_, config.rx_buffer_size,
                                       config.tx_buffer_size,
                                       config.event_queue_size, &events_, 0));
-  // Before the pins are connected, while the driver's queue is still empty,
-  // as a queue joins a set only empty.
+  // A queue joins a set only empty, but the driver listens from install on.
+  // On hardware nothing arrives before uart_set_pin() below connects the RX
+  // pin. Under QEMU, though, the UART is wired to its PTY or socket from the
+  // start: a peer already sending (a client saying hello while we boot) can
+  // queue an event right here, and joining would fail. So RX is quiet while
+  // the queue joins, and what came before is dropped: the peer's link sends
+  // its hello again.
+  ESP_ERROR_CHECK(uart_disable_rx_intr(port_));
+  ESP_ERROR_CHECK(uart_flush_input(port_));
+  xQueueReset(events_);
   set_ = xQueueCreateSet(config.event_queue_size + 1);
   if (set_ == nullptr || xQueueAddToSet(events_, set_) != pdPASS ||
       xQueueAddToSet(wake_, set_) != pdPASS) {
     ESP_LOGE(kTag, "can't make the queue set");
     std::abort();
   }
+  ESP_ERROR_CHECK(uart_enable_rx_intr(port_));
   const uart_config_t uart{
       .baud_rate = static_cast<int>(config.baud_rate),
       .data_bits = UART_DATA_8_BITS,

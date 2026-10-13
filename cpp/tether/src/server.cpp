@@ -75,6 +75,10 @@ uint16_t RawSink::credit() const {
   return server_ == nullptr ? uint16_t{0} : server_->credit(epoch_, call_);
 }
 
+bool RawSink::closed() const {
+  return server_ == nullptr || server_->closed(epoch_, call_);
+}
+
 std::expected<void, CallError> RawSink::end(WireStatus status) const {
   if (server_ == nullptr) {
     return kClosed;
@@ -446,6 +450,11 @@ uint16_t Server::credit(uint32_t epoch, uint32_t call) {
   const Guard guard(*this);
   const CallSlot* slot = find(epoch, call, State::Stream);
   return slot == nullptr ? uint16_t{0} : slot->credit;
+}
+
+bool Server::closed(uint32_t epoch, uint32_t call) {
+  const Guard guard(*this);
+  return find(epoch, call, State::Stream) == nullptr;
 }
 
 }  // namespace tether

@@ -158,6 +158,24 @@ TEST_F(ServerTest, ChannelItemsUseCredit) {
   EXPECT_THAT(rig.server.open_calls(), Eq(0U));
 }
 
+TEST_F(ServerTest, ASinkIsClosedOnceItsChannelIsOver) {
+  EXPECT_TRUE(RawSink{}.closed());  // A placeholder is never open.
+
+  rig.open(20, kMethod, 0);
+  rig.open(21, kMethod, 1);
+  const RawSink ended = recorder.channels[0].sink;
+  const RawSink cancelled = recorder.channels[1].sink;
+  // Open without credit: credit() can't tell this from closed.
+  EXPECT_THAT(ended.credit(), Eq(0U));
+  EXPECT_FALSE(ended.closed());
+  EXPECT_FALSE(cancelled.closed());
+
+  ASSERT_TRUE(ended.end());
+  rig.cancel(21);
+  EXPECT_TRUE(ended.closed());
+  EXPECT_TRUE(cancelled.closed());
+}
+
 TEST_F(ServerTest, EndCarriesItsStatus) {
   rig.open(20, kMethod, 1);
   ASSERT_TRUE(recorder.channels[0].sink.end(WireStatus::ABORTED));
@@ -798,6 +816,9 @@ TEST_F(ServerTest, RestartCancelsAndClosesWhatCameBefore) {
   EXPECT_THAT(reply.send({}), Eq(std::unexpected(CallError::Closed)));
   EXPECT_THAT(sink.send({}), Eq(std::unexpected(CallError::Closed)));
   EXPECT_THAT(sink.credit(), Eq(0U));
+  // Even with a new call 20 open, the old sink stays closed.
+  EXPECT_TRUE(sink.closed());
+  EXPECT_FALSE(recorder.channels[1].sink.closed());
   rig.pump();
   EXPECT_THAT(rig.take(), IsEmpty());
   ASSERT_TRUE(recorder.calls[1].reply.send({}));
